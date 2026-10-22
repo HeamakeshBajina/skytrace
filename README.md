@@ -4,7 +4,7 @@
 
 SKYTRACE is an aerospace engineering project for exploring orbital data, satellite motion, and preliminary close-approach screening. Its current Python prototype retrieves and validates satellite TLE data, propagates states using SGP4, screens instantaneous and sampled-window separations, reports TLE freshness, and exposes a versioned JSON output for software integration.
 
-> **Project status:** Working Python backend prototype. Automated tests cover the implemented functionality. The interactive Next.js website and its visualizations are planned work.
+> **Project status:** SKYTRACE V1 includes a Python orbital-screening backend and a Next.js dashboard. The automated test suite covers the implemented Python functionality, and the frontend passes lint and production-build checks.
 
 ## Current capabilities
 
@@ -106,11 +106,11 @@ data/raw/           # Retrieved TLE snapshots
 
 ## Roadmap
 
-1. Keep the backend behavior, JSON contract, and documentation aligned.
-2. Complete release-readiness checks and reproducible example verification.
-3. Build a polished Next.js and TypeScript website with interactive screening controls, result tables, and visualizations.
-4. Integrate the website with the screening backend through a clearly defined interface.
-5. Expand scientific validation, data provenance, and documented uncertainty handling.
+1. Maintain consistency between backend behavior, the JSON contract, and documentation.
+2. Improve reproducibility, scientific validation, data provenance, and uncertainty handling.
+3. Expand dashboard visualizations and screening controls.
+4. Strengthen backend/frontend integration and error handling.
+5. Continue documenting scientific limitations and validating results against reference cases.
 
 ## Engineering principles
 
