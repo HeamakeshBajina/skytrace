@@ -159,3 +159,102 @@ def test_sampled_window_screening_cli_succeeds_with_fixture(tmp_path):
     assert "Pairs skipped due to errors:" in result.stdout
     assert "CLOSEST NON-DUPLICATE PAIRS" in result.stdout
     assert "No collision probability or operational risk assessment" in result.stdout
+
+def test_json_instantaneous_screening_cli(tmp_path):
+    import json
+
+    create_tle_dataset(tmp_path)
+    result = run_cli(
+        "--start", FIXED_START, "--format", "json", cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "1.0"
+    assert payload["screening"]["mode"] == "instantaneous"
+    assert payload["units"]["separation"] == "km"
+    assert payload["summary"]["objects_propagated"] == 2
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["separation_km"] >= 0
+    assert payload["results"][0]["catalog_id_a"]
+    assert payload["results"][0]["catalog_id_b"]
+    assert "No collision probability" in " ".join(payload["limitations"])
+
+
+def test_json_sampled_window_screening_cli(tmp_path):
+    import json
+
+    create_tle_dataset(tmp_path)
+    result = run_cli(
+        "--start", FIXED_START,
+        "--hours", "0.05",
+        "--step-seconds", "60",
+        "--format", "json",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "1.0"
+    assert payload["screening"]["mode"] == "sampled_window"
+    assert payload["screening"]["end_utc"]
+    assert payload["summary"]["pairs_screened_successfully"] == 1
+    assert payload["results"][0]["time_utc"]
+    assert payload["results"][0]["catalog_id_a"]
+    assert payload["results"][0]["catalog_id_b"]
+    assert payload["results"][0]["samples_evaluated"] >= 2
+    assert "continuous-time minima" in " ".join(payload["limitations"])
+
+
+def test_text_format_remains_the_default(tmp_path):
+    create_tle_dataset(tmp_path)
+    result = run_cli("--start", FIXED_START, cwd=tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Mode: instantaneous" in result.stdout
+    assert not result.stdout.lstrip().startswith("{")
+
+
+def test_json_instantaneous_duplicate_names_are_distinguished_by_catalog_id(tmp_path):
+    import json
+
+    fixture = create_tle_dataset(tmp_path)
+    lines = fixture.read_text(encoding="utf-8").splitlines()
+    lines[0] = "REUSED NAME"
+    lines[3] = "REUSED NAME"
+    fixture.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = run_cli("--start", FIXED_START, "--format", "json", cwd=tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+
+    assert payload["summary"]["duplicate_state_pairs"] == 0
+    assert payload["summary"]["pairs_screened"] == 1
+    assert len(payload["results"]) == 1
+    assert {payload["results"][0]["catalog_id_a"], payload["results"][0]["catalog_id_b"]} == {
+        "25544", "25545"
+    }
+
+
+def test_json_sampled_window_duplicate_names_are_distinguished_by_catalog_id(tmp_path):
+    import json
+
+    fixture = create_tle_dataset(tmp_path)
+    lines = fixture.read_text(encoding="utf-8").splitlines()
+    lines[0] = "REUSED NAME"
+    lines[3] = "REUSED NAME"
+    fixture.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = run_cli(
+        "--start", FIXED_START,
+        "--hours", "0.05",
+        "--step-seconds", "60",
+        "--format", "json",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+
+    assert payload["summary"]["duplicate_state_pairs"] == 0
+    assert payload["summary"]["pairs_screened_successfully"] == 1
+    assert len(payload["results"]) == 1
+    assert {payload["results"][0]["catalog_id_a"], payload["results"][0]["catalog_id_b"]} == {
+        "25544", "25545"
+    }

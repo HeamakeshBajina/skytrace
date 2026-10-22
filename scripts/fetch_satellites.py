@@ -1,4 +1,5 @@
-﻿
+
+import argparse
 import json
 import urllib.request
 from datetime import datetime, timezone
@@ -129,6 +130,11 @@ def save_data_pair(
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Fetch, validate, and save station TLE data."
+    )
+    parser.parse_args()
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     request = urllib.request.Request(

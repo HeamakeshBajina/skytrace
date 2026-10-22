@@ -117,12 +117,17 @@ def find_duplicate_states(states, tolerance_km=1e-6, velocity_tolerance_km_s=1e-
                 position_difference <= tolerance_km
                 and velocity_difference <= velocity_tolerance_km_s
             ):
-                duplicates.append({
+                item = {
                     "object_a": first["name"],
                     "object_b": second["name"],
                     "position_difference_km": position_difference,
                     "velocity_difference_km_s": velocity_difference,
-                })
+                }
+                if first.get("catalog_id") is not None:
+                    item["catalog_id_a"] = str(first["catalog_id"])
+                if second.get("catalog_id") is not None:
+                    item["catalog_id_b"] = str(second["catalog_id"])
+                duplicates.append(item)
     return duplicates
 
 
@@ -166,6 +171,8 @@ def find_duplicate_pairs_over_window(
         (i, j): {
             "object_a": first[0],
             "object_b": second[0],
+            "catalog_id_a": first[1][2:7].strip(),
+            "catalog_id_b": second[1][2:7].strip(),
             "max_position_difference_km": 0.0,
             "max_velocity_difference_km_s": 0.0,
             "samples_evaluated": 0,
@@ -182,6 +189,7 @@ def find_duplicate_pairs_over_window(
             position, velocity = _propagate(satellite, current)
             states.append({
                 "name": record[0],
+                "catalog_id": record[1][2:7].strip(),
                 "position": position,
                 "velocity": velocity,
             })
@@ -189,14 +197,20 @@ def find_duplicate_pairs_over_window(
         duplicates = find_duplicate_states(
             states, tolerance_km, velocity_tolerance_km_s
         )
-        duplicate_names = {
-            frozenset((item["object_a"], item["object_b"])): item
+        duplicate_ids = {
+            frozenset((
+                item.get("catalog_id_a", item["object_a"]),
+                item.get("catalog_id_b", item["object_b"]),
+            )): item
             for item in duplicates
         }
 
         for key, result in list(still_duplicate.items()):
-            names = frozenset((result["object_a"], result["object_b"]))
-            item = duplicate_names.get(names)
+            ids = frozenset((
+                records[key[0]][1][2:7].strip(),
+                records[key[1]][1][2:7].strip(),
+            ))
+            item = duplicate_ids.get(ids)
             if item is None:
                 del still_duplicate[key]
             else:

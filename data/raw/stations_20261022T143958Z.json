@@ -1,0 +1,7 @@
+{
+  "source": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
+  "retrieved_at_utc": "2026-10-22T14:39:58.984757+00:00",
+  "record_count": 17,
+  "format": "TLE",
+  "validation": "Structure, catalog IDs, and TLE checksums passed; not an independent accuracy validation"
+}

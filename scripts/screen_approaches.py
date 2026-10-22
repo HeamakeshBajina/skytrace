@@ -1,5 +1,6 @@
 """Preliminary satellite close-approach screening from TLE data."""
 import argparse
+import json
 from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
@@ -93,12 +94,197 @@ def parse_utc(value):
     return parsed.astimezone(timezone.utc)
 
 
+
+def run_json_screening(args):
+    """Run screening and emit a versioned, machine-readable JSON document."""
+    data_file, records = load_latest_records()
+    start = args.start or datetime.now(timezone.utc)
+
+    ages = []
+    future_epochs = []
+    for name, line1, line2 in records:
+        satellite = Satrec.twoline2rv(line1, line2)
+        epoch_jd = satellite.jdsatepoch + satellite.jdsatepochF
+        epoch_datetime = datetime(
+            2000, 1, 1, 12, tzinfo=timezone.utc
+        ) + timedelta(days=epoch_jd - 2451545.0)
+        age_hours = tle_age_hours(epoch_datetime, start)
+        ages.append({"object": name, "age_hours": age_hours})
+        if age_hours < 0:
+            future_epochs.append(name)
+
+    payload = {
+        "schema_version": "1.0",
+        "product": "SKYTRACE",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "data_file": str(data_file),
+        "screening": {
+            "mode": "instantaneous" if args.hours == 0 else "sampled_window",
+            "start_utc": start.isoformat(),
+            "hours": args.hours,
+            "step_seconds": args.step_seconds if args.hours > 0 else None,
+            "top": args.top,
+            "input_objects": len(records),
+        },
+        "tle_freshness": {
+            "records": ages,
+            "youngest_age_hours": min((x["age_hours"] for x in ages), default=None),
+            "oldest_age_hours": max((x["age_hours"] for x in ages), default=None),
+            "future_epoch_objects": future_epochs,
+            "uncertainty_note": "TLE age alone does not quantify orbital uncertainty.",
+        },
+        "units": {
+            "separation": "km",
+            "position": "km",
+            "velocity": "km/s",
+            "tle_age": "hours",
+            "time": "ISO-8601 UTC",
+        },
+        "results": [],
+        "data_quality_flags": [],
+        "summary": {},
+        "limitations": [
+            "Duplicate states indicate matching numerical states, not collision risk.",
+            "Sampled minima are not guaranteed continuous-time minima.",
+            "No collision probability or operational risk assessment is performed.",
+            "TLE age and orbital uncertainty require separate review.",
+        ],
+    }
+
+    if args.hours == 0:
+        states = propagate_records(records, start)
+        if len(states) < 2:
+            raise RuntimeError("Need at least two successfully propagated objects.")
+
+        duplicates = find_duplicate_states(states)
+        payload["data_quality_flags"] = [
+            {
+                "type": "duplicate_state",
+                "object_a": item["object_a"],
+                "object_b": item["object_b"],
+                **({"catalog_id_a": item["catalog_id_a"]} if "catalog_id_a" in item else {}),
+                **({"catalog_id_b": item["catalog_id_b"]} if "catalog_id_b" in item else {}),
+                "position_difference_km": item["position_difference_km"],
+                "velocity_difference_km_s": item["velocity_difference_km_s"],
+                "classification": "data_quality_flag_not_collision_alert",
+            }
+            for item in duplicates
+        ]
+
+        duplicate_keys = {
+            frozenset((
+                item.get("catalog_id_a", item["object_a"]),
+                item.get("catalog_id_b", item["object_b"]),
+            ))
+            for item in duplicates
+        }
+        approaches = []
+        for i, first in enumerate(states):
+            for second in states[i + 1:]:
+                if frozenset((
+                    first["catalog_id"], second["catalog_id"]
+                )) in duplicate_keys:
+                    continue
+                approaches.append({
+                    "object_a": first["name"],
+                    "catalog_id_a": first["catalog_id"],
+                    "object_b": second["name"],
+                    "catalog_id_b": second["catalog_id"],
+                    "separation_km": math.dist(
+                        first["position"], second["position"]
+                    ),
+                    "time_utc": start.isoformat(),
+                    "method": "instantaneous SGP4 state separation",
+                })
+
+        approaches.sort(key=lambda item: item["separation_km"])
+        payload["results"] = approaches[:args.top]
+        payload["summary"] = {
+            "objects_propagated": len(states),
+            "pairs_evaluated": len(states) * (len(states) - 1) // 2,
+            "duplicate_state_pairs": len(duplicates),
+            "pairs_screened": (
+                len(states) * (len(states) - 1) // 2 - len(duplicates)
+            ),
+            "results_returned": len(payload["results"]),
+        }
+    else:
+        end = start + timedelta(hours=args.hours)
+        payload["screening"]["end_utc"] = end.isoformat()
+
+        duplicates = find_duplicate_pairs_over_window(
+            records, start, end, args.step_seconds
+        )
+        payload["data_quality_flags"] = [
+            {
+                "type": "duplicate_state_across_window",
+                "object_a": item["object_a"],
+                "object_b": item["object_b"],
+                "catalog_id_a": item["catalog_id_a"],
+                "catalog_id_b": item["catalog_id_b"],
+                "max_position_difference_km": item["max_position_difference_km"],
+                "max_velocity_difference_km_s": item["max_velocity_difference_km_s"],
+                "samples_evaluated": item["samples_evaluated"],
+                "classification": "data_quality_flag_not_collision_alert",
+            }
+            for item in duplicates
+        ]
+
+        duplicate_keys = {
+            frozenset((
+                item.get("catalog_id_a", item["object_a"]),
+                item.get("catalog_id_b", item["object_b"]),
+            ))
+            for item in duplicates
+        }
+        results = []
+        failures = []
+        for i, first in enumerate(records):
+            for second in records[i + 1:]:
+                if frozenset((
+                    first[1][2:7].strip(), second[1][2:7].strip()
+                )) in duplicate_keys:
+                    continue
+                try:
+                    item = sampled_minimum_separation(
+                        first, second, start, end, args.step_seconds
+                    )
+                    results.append({
+                        "object_a": item["object_a"],
+                        "catalog_id_a": first[1][2:7].strip(),
+                        "object_b": item["object_b"],
+                        "catalog_id_b": second[1][2:7].strip(),
+                        "separation_km": item["separation_km"],
+                        "time_utc": item["time"].isoformat(),
+                        "samples_evaluated": item["samples_evaluated"],
+                        "method": item["method"],
+                    })
+                except (ValueError, OverflowError) as exc:
+                    failures.append({
+                        "object_a": first[0],
+                        "object_b": second[0],
+                        "reason": str(exc),
+                    })
+
+        results.sort(key=lambda item: item["separation_km"])
+        payload["results"] = results[:args.top]
+        payload["summary"] = {
+            "pairs_evaluated": len(records) * (len(records) - 1) // 2,
+            "duplicate_state_pairs": len(duplicates),
+            "pairs_screened_successfully": len(results),
+            "pairs_skipped_due_to_errors": len(failures),
+            "results_returned": len(payload["results"]),
+            "errors": failures,
+        }
+
+    print(json.dumps(payload, indent=2, allow_nan=False))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=float, default=0.0)
     parser.add_argument("--step-seconds", type=float, default=60.0)
     parser.add_argument("--start", type=parse_utc, default=None)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args()
 
     if not math.isfinite(args.hours) or args.hours < 0:
@@ -107,6 +293,10 @@ def main():
         parser.error("--step-seconds must be finite and positive.")
     if args.top < 1:
         parser.error("--top must be at least 1.")
+
+    if args.format == "json":
+        run_json_screening(args)
+        return
 
     data_file, records = load_latest_records()
     start = args.start or datetime.now(timezone.utc)
@@ -152,7 +342,10 @@ def main():
 
         duplicates = find_duplicate_states(states)
         duplicate_keys = {
-            frozenset((item["object_a"], item["object_b"]))
+            frozenset((
+                item.get("catalog_id_a", item["object_a"]),
+                item.get("catalog_id_b", item["object_b"]),
+            ))
             for item in duplicates
         }
 
@@ -171,7 +364,9 @@ def main():
         approaches = []
         for i, first in enumerate(states):
             for second in states[i + 1:]:
-                if frozenset((first["name"], second["name"])) in duplicate_keys:
+                if frozenset((
+                    first["catalog_id"], second["catalog_id"]
+                )) in duplicate_keys:
                     continue
                 approaches.append((
                     math.dist(first["position"], second["position"]),
@@ -199,7 +394,10 @@ def main():
             records, start, end, args.step_seconds
         )
         duplicate_keys = {
-            frozenset((item["object_a"], item["object_b"]))
+            frozenset((
+                item.get("catalog_id_a", item["object_a"]),
+                item.get("catalog_id_b", item["object_b"]),
+            ))
             for item in duplicates
         }
         print(f"Duplicate-state pairs across all samples: {len(duplicates)}")
@@ -217,7 +415,9 @@ def main():
         failures = 0
         for i, first in enumerate(records):
             for second in records[i + 1:]:
-                if frozenset((first[0], second[0])) in duplicate_keys:
+                if frozenset((
+                    first[1][2:7].strip(), second[1][2:7].strip()
+                )) in duplicate_keys:
                     continue
                 try:
                     results.append(sampled_minimum_separation(

@@ -253,3 +253,18 @@ skytrace_*_test.txt
 skytrace_step*_*.txt
 skytrace_stage*_*.txt
 skytrace_stage3b_precheck.txt
+
+# SKYTRACE local release-audit artifacts
+/backups/
+/reports/
+duplicate_investigation_*.txt
+engineering_audit_*.txt
+font_update_*.txt
+screening_audit_*.json
+screening_errors_*.txt
+source_verification_*.txt
+tle_record_audit_*.txt
+skytrace_build_diagnostic*.txt
+skytrace_full_dashboard_repair.txt
+skytrace_run_diagnostic.txt
+skytrace_v1_release_inventory.txt
