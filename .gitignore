@@ -218,3 +218,38 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# SKYTRACE local development exclusions
+.venv/
+venv/
+.env.*
+.coverage
+htmlcov/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local backups and intermediate versions
+*.bak
+*.backup
+*.failed-install-backup
+*.stage*-backup
+*.step*-backup
+*.pre_stage*-backup
+*.pre-stage*-backup
+
+# Temporary diagnostic Python helpers
+_step*.py
+scripts/_step*.py
+scripts/*_check.py
+/skytrace_step3_diagnostic.py
+
+# Historical SKYTRACE diagnostic and audit reports
+skytrace_*_report.txt
+skytrace_*_audit.txt
+skytrace_*_result.txt
+skytrace_*_check.txt
+skytrace_*_test.txt
+skytrace_step*_*.txt
+skytrace_stage*_*.txt
+skytrace_stage3b_precheck.txt
