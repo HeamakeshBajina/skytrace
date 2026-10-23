@@ -1,16 +1,96 @@
 
 import argparse
+import http.cookiejar
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import urlencode
 
 
 URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle"
 OUTPUT_DIR = Path("data/raw")
+
+
+def fetch_spacetrack():
+    """Fetch current GP data from Space-Track and select station-related objects."""
+    username = os.getenv("SPACETRACK_USER")
+    password = os.getenv("SPACETRACK_PASS")
+    if not username or not password:
+        raise RuntimeError("Space-Track credentials are not configured.")
+
+    base_url = "https://www.space-track.org"
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cookie_jar)
+    )
+
+    login_data = urlencode({
+        "identity": username,
+        "password": password,
+    }).encode("utf-8")
+    login_request = urllib.request.Request(
+        base_url + "/ajaxauth/login",
+        data=login_data,
+        headers={
+            "User-Agent": "SKYTRACE/1.1",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with opener.open(login_request, timeout=15) as response:
+        login_body = response.read().decode("utf-8", errors="replace")
+    if "login failed" in login_body.lower():
+        raise RuntimeError("Space-Track authentication failed.")
+
+    query_url = (
+        base_url
+        + "/basicspacedata/query/class/gp/decay_date/null-val/"
+        + "epoch/%3Enow-10/format/json"
+    )
+    query_request = urllib.request.Request(
+        query_url,
+        headers={"User-Agent": "SKYTRACE/1.1"},
+    )
+    with opener.open(query_request, timeout=45) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    if not isinstance(payload, list):
+        raise RuntimeError("Space-Track returned an unexpected GP response.")
+
+    station_keywords = (
+        "ISS", "TIANGONG", "TIANHE", "TIANZHOU",
+        "MENGTIAN", "WENTIAN", "CSS",
+    )
+    lines = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("OBJECT_NAME") or "").strip()
+        if not name or not any(
+            keyword in name.upper() for keyword in station_keywords
+        ):
+            continue
+
+        line1 = str(item.get("TLE_LINE1") or "").strip()
+        line2 = str(item.get("TLE_LINE2") or "").strip()
+        if not line1 or not line2:
+            continue
+
+        name_line = str(item.get("TLE_LINE0") or name).strip()
+        if name_line.startswith("0 "):
+            name_line = name_line[2:]
+        lines.extend((name_line, line1, line2))
+
+    if not lines:
+        raise RuntimeError(
+            "Space-Track returned no usable station-related TLE records."
+        )
+
+    return "\n".join(lines) + "\n", query_url
 
 
 def tle_checksum(line):
@@ -139,27 +219,41 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    request = urllib.request.Request(
-        URL,
-        headers={"User-Agent": "SKYTRACE/1.0 satellite data fetcher"},
-    )
+    raw_data = None
+    source_url = None
 
-    # Retry transient connection failures, but do not hammer the source.
-    for attempt in range(3):
+    if os.getenv("SPACETRACK_USER") and os.getenv("SPACETRACK_PASS"):
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                raw_data = response.read().decode("utf-8")
-                source_url = response.geturl()
-            break
-        except urllib.error.HTTPError:
-            # HTTP responses such as 403 or 429 need separate handling.
-            raise
-        except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt == 2:
-                raise RuntimeError(
-                    f"CelesTrak download failed after 3 attempts: {exc}"
-                ) from exc
-            time.sleep(attempt + 1)
+            raw_data, source_url = fetch_spacetrack()
+            print("Data source: Space-Track")
+        except Exception as exc:
+            print(
+                f"Space-Track fetch failed ({type(exc).__name__}: {exc}); "
+                "trying CelesTrak."
+            )
+
+    if raw_data is None:
+        request = urllib.request.Request(
+            URL,
+            headers={"User-Agent": "SKYTRACE/1.0 satellite data fetcher"},
+        )
+
+        # Retry transient connection failures, but do not hammer the source.
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    raw_data = response.read().decode("utf-8")
+                    source_url = response.geturl()
+                break
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"CelesTrak download failed after 3 attempts: {exc}"
+                    ) from exc
+                time.sleep(attempt + 1)
+
 
     lines = [line.strip() for line in raw_data.splitlines() if line.strip()]
 

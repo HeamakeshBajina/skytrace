@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "scripts" / "screen_approaches.py"
 FETCH_SCRIPT = ROOT / "scripts" / "fetch_satellites.py"
 MAX_TLE_AGE_HOURS = 6
-REFRESH_FAILURE_COOLDOWN_SECONDS = 300
+REFRESH_FAILURE_COOLDOWN_SECONDS = 3600
 _last_refresh_failure_at = None
 _last_refresh_failure_detail = None
 
@@ -79,7 +79,7 @@ def ensure_fresh_snapshot():
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=40,
+            timeout=100,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
