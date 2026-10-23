@@ -365,7 +365,7 @@ export default function Home() {
                 aria-label="Search close approaches"
               />
               <button className="sort-button" onClick={() => setSortAscending((value) => !value)}>
-                {sortAscending ? "Nearest first â†‘" : "Farthest first â†“"}
+                {sortAscending ? "Nearest first (ascending)" : "Farthest first (descending)"}
               </button>
             </div>
           </div>
