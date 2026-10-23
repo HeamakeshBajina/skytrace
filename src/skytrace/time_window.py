@@ -1,4 +1,4 @@
-﻿"""Preliminary sampled satellite separation screening using SGP4.
+"""Preliminary sampled satellite separation screening using SGP4.
 
 This module finds the minimum separation among sampled times only.
 It is not a validated conjunction assessment or collision probability model.
@@ -249,3 +249,20 @@ def tle_age_hours(epoch, reference_time):
         reference_time.astimezone(timezone.utc)
         - epoch.astimezone(timezone.utc)
     ).total_seconds() / 3600.0
+
+def classify_tle_epoch(epoch, reference_time, max_age_hours=6.0):
+    """Classify a TLE epoch without silently discarding its record."""
+    if (
+        isinstance(max_age_hours, bool)
+        or not isinstance(max_age_hours, (int, float))
+        or not math.isfinite(max_age_hours)
+        or max_age_hours < 0
+    ):
+        raise ValueError("max_age_hours must be finite and non-negative.")
+
+    age = tle_age_hours(epoch, reference_time)
+    if age < 0:
+        return "future_epoch"
+    if age > max_age_hours:
+        return "stale"
+    return "fresh"

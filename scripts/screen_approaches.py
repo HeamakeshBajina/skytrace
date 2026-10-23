@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sgp4.api import Satrec, jday
 from skytrace.time_window import (
+    classify_tle_epoch,
     find_duplicate_pairs_over_window,
     find_duplicate_states,
     sampled_minimum_separation,
@@ -109,8 +110,13 @@ def run_json_screening(args):
             2000, 1, 1, 12, tzinfo=timezone.utc
         ) + timedelta(days=epoch_jd - 2451545.0)
         age_hours = tle_age_hours(epoch_datetime, start)
-        ages.append({"object": name, "age_hours": age_hours})
-        if age_hours < 0:
+        status = classify_tle_epoch(epoch_datetime, start)
+        ages.append({
+            "object": name,
+            "age_hours": age_hours,
+            "status": status,
+        })
+        if status == "future_epoch":
             future_epochs.append(name)
 
     payload = {
@@ -130,7 +136,13 @@ def run_json_screening(args):
             "records": ages,
             "youngest_age_hours": min((x["age_hours"] for x in ages), default=None),
             "oldest_age_hours": max((x["age_hours"] for x in ages), default=None),
+            "max_age_hours": 6,
+            "fresh_records": sum(x["status"] == "fresh" for x in ages),
+            "stale_records": sum(x["status"] == "stale" for x in ages),
             "future_epoch_objects": future_epochs,
+            "stale_epoch_objects": [
+                x["object"] for x in ages if x["status"] == "stale"
+            ],
             "uncertainty_note": "TLE age alone does not quantify orbital uncertainty.",
         },
         "units": {
