@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -47,7 +47,7 @@ type ScreeningData = {
 type TableRow = ScreeningResult & { separation: number };
 
 function formatNumber(value: number | undefined, digits = 0) {
-  if (value === undefined || !Number.isFinite(value)) return "—";
+  if (value === undefined || !Number.isFinite(value)) return "â€”";
   return value.toLocaleString(undefined, {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
@@ -55,7 +55,7 @@ function formatNumber(value: number | undefined, digits = 0) {
 }
 
 function formatUtc(value?: string) {
-  if (!value) return "—";
+  if (!value) return "â€”";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toISOString().replace("T", " ").replace(".000Z", " UTC").replace("Z", " UTC");
@@ -72,13 +72,13 @@ function OrbitScene() {
         <div className="earth-land earth-land-one" />
         <div className="earth-land earth-land-two" />
       </div>
-      <span className="orbit-satellite orbit-satellite-one">✦</span>
-      <span className="orbit-satellite orbit-satellite-two">✦</span>
-      <span className="orbit-satellite orbit-satellite-three">✦</span>
+      <span className="orbit-satellite orbit-satellite-one">âœ¦</span>
+      <span className="orbit-satellite orbit-satellite-two">âœ¦</span>
+      <span className="orbit-satellite orbit-satellite-three">âœ¦</span>
       <div className="orbit-caption">
         <span className="status-dot" />
         ORBITAL OVERVIEW
-        <span className="orbit-caption-note">Illustrative · Not to scale</span>
+        <span className="orbit-caption-note">Illustrative Â· Not to scale</span>
       </div>
     </div>
   );
@@ -114,7 +114,7 @@ function formatQualityFlag(flag: unknown): string {
       velocity,
     ].filter(Boolean);
 
-    return details.length ? `${type}: ${details.join(" · ")}` : `${type}: ${JSON.stringify(flag)}`;
+    return details.length ? `${type}: ${details.join(" Â· ")}` : `${type}: ${JSON.stringify(flag)}`;
   }
 
   return String(flag);
@@ -213,13 +213,16 @@ export default function Home() {
 
         <div className="sidebar-label">WORKSPACE</div>
         <a className="nav-item active" href="#overview">
-          <span className="nav-icon">◈</span> Mission overview
+          <span className="nav-icon">â—ˆ</span> Mission overview
         </a>
         <a className="nav-item" href="#screening">
-          <span className="nav-icon">⌁</span> Close approaches
+          <span className="nav-icon">âŒ</span> Close approaches
         </a>
         <a className="nav-item" href="#data-quality">
           <span className="nav-icon">◎</span> Data quality
+        </a>
+        <a className="nav-item" href="/guide">
+          <span className="nav-icon">?</span> User Guide
         </a>
 
         <div className="sidebar-bottom">
@@ -227,7 +230,7 @@ export default function Home() {
             <span className={`status-dot ${data ? "" : "status-dot-muted"}`} />
             <div>
               <strong>{data ? "Engine connected" : "Engine unavailable"}</strong>
-              <small>Python · SGP4 propagation</small>
+              <small>Python Â· SGP4 propagation</small>
             </div>
           </div>
           <div className="sidebar-version">SKYTRACE / EARTH ORBIT</div>
@@ -240,8 +243,8 @@ export default function Home() {
           <div className="topbar-right">
             <span className="live-indicator"><span className="status-dot" /> LIVE API</span>
             <button className="refresh-button" onClick={() => void refresh()} disabled={loading}>
-              <span className={loading ? "spin" : ""}>↻</span>
-              {loading ? "Screening…" : "Run screening"}
+              <span className={loading ? "spin" : ""}>â†»</span>
+              {loading ? "Screeningâ€¦" : "Run screening"}
             </button>
           </div>
         </header>
@@ -274,26 +277,26 @@ export default function Home() {
 
         <section className="metrics-grid" aria-label="Live screening metrics">
           <article className="metric-card">
-            <div className="metric-top"><span>OBJECTS LOADED</span><span className="metric-icon">◉</span></div>
-            <div className="metric-value">{data ? formatNumber(data.screening.input_objects) : "—"}</div>
+            <div className="metric-top"><span>OBJECTS LOADED</span><span className="metric-icon">â—‰</span></div>
+            <div className="metric-value">{data ? formatNumber(data.screening.input_objects) : "â€”"}</div>
             <div className="metric-foot">Objects in screening input</div>
           </article>
           <article className="metric-card">
-            <div className="metric-top"><span>PAIR CANDIDATES</span><span className="metric-icon">⌘</span></div>
-            <div className="metric-value">{data ? formatNumber(data.summary.pairs_evaluated) : "—"}</div>
+            <div className="metric-top"><span>PAIR CANDIDATES</span><span className="metric-icon">âŒ˜</span></div>
+            <div className="metric-value">{data ? formatNumber(data.summary.pairs_evaluated) : "â€”"}</div>
             <div className="metric-foot">All possible object pairs</div>
           </article>
           <article className="metric-card">
-            <div className="metric-top"><span>CLOSEST SEPARATION</span><span className="metric-icon">↔</span></div>
+            <div className="metric-top"><span>CLOSEST SEPARATION</span><span className="metric-icon">â†”</span></div>
             <div className="metric-value">
-              {data?.results.length ? formatNumber(Math.min(...data.results.map((row) => row.separation_km)), 2) : "—"}
+              {data?.results.length ? formatNumber(Math.min(...data.results.map((row) => row.separation_km)), 2) : "â€”"}
               <span className="metric-unit">km</span>
             </div>
             <div className="metric-foot">Minimum returned separation</div>
           </article>
           <article className="metric-card">
-            <div className="metric-top"><span>DATA QUALITY FLAGS</span><span className="metric-icon">△</span></div>
-            <div className="metric-value">{data ? formatNumber(flags.length) : "—"}</div>
+            <div className="metric-top"><span>DATA QUALITY FLAGS</span><span className="metric-icon">â–³</span></div>
+            <div className="metric-value">{data ? formatNumber(flags.length) : "â€”"}</div>
             <div className="metric-foot">{flags.length ? "Review required" : "Reported by engine"}</div>
           </article>
         </section>
@@ -322,22 +325,22 @@ export default function Home() {
             </div>
 
             <div className="status-row">
-              <span>Propagation engine</span><strong>{data ? "SGP4" : "—"}</strong>
+              <span>Propagation engine</span><strong>{data ? "SGP4" : "â€”"}</strong>
             </div>
             <div className="status-row">
-              <span>Screening mode</span><strong>{data ? (isWindow ? "Sampled window" : "Instantaneous") : "—"}</strong>
+              <span>Screening mode</span><strong>{data ? (isWindow ? "Sampled window" : "Instantaneous") : "â€”"}</strong>
             </div>
             <div className="status-row">
-              <span>TLE youngest age</span><strong>{freshness?.youngest_age_hours != null ? `${formatNumber(freshness.youngest_age_hours, 1)} h` : "—"}</strong>
+              <span>TLE youngest age</span><strong>{freshness?.youngest_age_hours != null ? `${formatNumber(freshness.youngest_age_hours, 1)} h` : "â€”"}</strong>
             </div>
             <div className="status-row">
-              <span>TLE oldest age</span><strong>{freshness?.oldest_age_hours != null ? `${formatNumber(freshness.oldest_age_hours, 1)} h` : "—"}</strong>
+              <span>TLE oldest age</span><strong>{freshness?.oldest_age_hours != null ? `${formatNumber(freshness.oldest_age_hours, 1)} h` : "â€”"}</strong>
             </div>
             <div className="status-row">
-              <span>Returned results</span><strong>{data ? formatNumber(data.summary.results_returned ?? data.results.length) : "—"}</strong>
+              <span>Returned results</span><strong>{data ? formatNumber(data.summary.results_returned ?? data.results.length) : "â€”"}</strong>
             </div>
             <div className="status-row">
-              <span>Duplicate-state pairs</span><strong>{data ? formatNumber(data.summary.duplicate_state_pairs) : "—"}</strong>
+              <span>Duplicate-state pairs</span><strong>{data ? formatNumber(data.summary.duplicate_state_pairs) : "â€”"}</strong>
             </div>
             {freshness?.uncertainty_note && (
               <div className="uncertainty-note">{freshness.uncertainty_note}</div>
@@ -350,25 +353,25 @@ export default function Home() {
             <div>
               <div className="eyebrow">PAIRWISE PROXIMITY ANALYSIS</div>
               <h2>Closest approaches</h2>
-              <p className="panel-subtitle">Sorted by reported separation · Distances in kilometres</p>
+              <p className="panel-subtitle">Sorted by reported separation Â· Distances in kilometres</p>
             </div>
             <div className="table-controls">
               <input
                 className="search-input"
                 type="search"
-                placeholder="Search objects or catalog IDs…"
+                placeholder="Search objects or catalog IDsâ€¦"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 aria-label="Search close approaches"
               />
               <button className="sort-button" onClick={() => setSortAscending((value) => !value)}>
-                {sortAscending ? "Nearest first ↑" : "Farthest first ↓"}
+                {sortAscending ? "Nearest first â†‘" : "Farthest first â†“"}
               </button>
             </div>
           </div>
 
           <div className="table-meta">
-            <span>{loading ? "Running engine…" : `${rows.length} of ${data?.results.length ?? 0} results shown`}</span>
+            <span>{loading ? "Running engineâ€¦" : `${rows.length} of ${data?.results.length ?? 0} results shown`}</span>
             <span>{data ? `Generated ${formatUtc(data.generated_at_utc)}` : "Waiting for API"}</span>
           </div>
 
@@ -393,14 +396,14 @@ export default function Home() {
                   <tr><td colSpan={5} className="empty-state">{error ? "No data available. Fix the API error and retry." : "No matching results for this search."}</td></tr>
                 )}
                 {loading && !data && (
-                  <tr><td colSpan={5} className="empty-state">Waiting for the Python screening engine…</td></tr>
+                  <tr><td colSpan={5} className="empty-state">Waiting for the Python screening engineâ€¦</td></tr>
                 )}
               </tbody>
             </table>
           </div>
           <div className="table-footer">
             <span>Source: {data?.data_file ?? "Awaiting TLE data"}</span>
-            <span>Computed locally · SGP4</span>
+            <span>Computed locally Â· SGP4</span>
           </div>
         </section>
 
@@ -436,9 +439,10 @@ export default function Home() {
 
         <footer className="page-footer">
           <span>SKYTRACE <span className="footer-separator">/</span> SPACE DOMAIN AWARENESS</span>
-          <span>Live local screening · Not operational collision-avoidance guidance</span>
+          <span>Live local screening Â· Not operational collision-avoidance guidance</span>
         </footer>
       </section>
     </main>
   );
 }
+
