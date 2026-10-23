@@ -1,6 +1,8 @@
 
 import argparse
 import json
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,9 +144,22 @@ def main():
         headers={"User-Agent": "SKYTRACE/1.0 satellite data fetcher"},
     )
 
-    with urllib.request.urlopen(request, timeout=30) as response:
-        raw_data = response.read().decode("utf-8")
-        source_url = response.geturl()
+    # Retry transient connection failures, but do not hammer the source.
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                raw_data = response.read().decode("utf-8")
+                source_url = response.geturl()
+            break
+        except urllib.error.HTTPError:
+            # HTTP responses such as 403 or 429 need separate handling.
+            raise
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"CelesTrak download failed after 3 attempts: {exc}"
+                ) from exc
+            time.sleep(attempt + 1)
 
     lines = [line.strip() for line in raw_data.splitlines() if line.strip()]
 

@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "scripts" / "screen_approaches.py"
 FETCH_SCRIPT = ROOT / "scripts" / "fetch_satellites.py"
 MAX_TLE_AGE_HOURS = 6
+REFRESH_FAILURE_COOLDOWN_SECONDS = 300
+_last_refresh_failure_at = None
+_last_refresh_failure_detail = None
 
 app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
 
@@ -47,42 +51,72 @@ def snapshot_age_hours(tle_path):
 
 
 def ensure_fresh_snapshot():
+    global _last_refresh_failure_at, _last_refresh_failure_detail
+
     current = latest_snapshot()
     age = snapshot_age_hours(current) if current else None
 
-    if age is None or age < 0 or age > MAX_TLE_AGE_HOURS:
-        try:
-            refresh = subprocess.run(
-                [sys.executable, str(FETCH_SCRIPT)],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=40,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
+    # A verifiably fresh snapshot can be used without contacting the source.
+    if current is not None and age is not None and 0 <= age <= MAX_TLE_AGE_HOURS:
+        return current
+
+    # Avoid repeated upstream requests after a recent failed refresh.
+    if _last_refresh_failure_at is not None:
+        elapsed = time.monotonic() - _last_refresh_failure_at
+        remaining = REFRESH_FAILURE_COOLDOWN_SECONDS - elapsed
+        if remaining > 0:
             raise HTTPException(
                 status_code=503,
-                detail="TLE refresh timed out; screening was not run.",
-            ) from exc
-
-        if refresh.returncode != 0:
-            detail = refresh.stderr.strip()[-1500:]
-            raise HTTPException(
-                status_code=503,
-                detail="TLE refresh failed; screening was not run. "
-                + (detail or "Satellite data source unavailable."),
+                detail=(
+                    "TLE refresh recently failed; retry in about "
+                    f"{int(remaining) + 1} seconds. Screening was not run."
+                ),
             )
 
-        current = latest_snapshot()
-        age = snapshot_age_hours(current) if current else None
-
-    if current is None or age is None or age < 0 or age > MAX_TLE_AGE_HOURS:
+    try:
+        refresh = subprocess.run(
+            [sys.executable, str(FETCH_SCRIPT)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=40,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _last_refresh_failure_at = time.monotonic()
+        _last_refresh_failure_detail = "TLE refresh timed out."
         raise HTTPException(
             status_code=503,
-            detail="No verifiably fresh TLE snapshot is available.",
+            detail="TLE refresh timed out; screening was not run.",
+        ) from exc
+
+    if refresh.returncode != 0:
+        _last_refresh_failure_at = time.monotonic()
+        _last_refresh_failure_detail = (
+            refresh.stderr.strip()[-500:]
+            or "Satellite data source unavailable."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "TLE refresh failed; screening was not run. "
+                + _last_refresh_failure_detail
+            ),
         )
 
+    current = latest_snapshot()
+    age = snapshot_age_hours(current) if current else None
+
+    if current is None or age is None or age < 0 or age > MAX_TLE_AGE_HOURS:
+        _last_refresh_failure_at = time.monotonic()
+        _last_refresh_failure_detail = "No verifiably fresh TLE snapshot is available."
+        raise HTTPException(
+            status_code=503,
+            detail=_last_refresh_failure_detail,
+        )
+
+    _last_refresh_failure_at = None
+    _last_refresh_failure_detail = None
     return current
 
 
