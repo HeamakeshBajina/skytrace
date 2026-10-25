@@ -26,7 +26,10 @@ type ScreeningData = {
     input_objects: number;
   };
   tle_freshness?: {
-    records?: unknown[];
+    records?: { object?: string; age_hours?: number; status?: string }[];
+    fresh_records?: number;
+    stale_records?: number;
+    max_age_hours?: number;
     youngest_age_hours?: number | null;
     oldest_age_hours?: number | null;
     future_epoch_objects?: string[];
@@ -199,6 +202,9 @@ export default function Home() {
   const freshness = data?.tle_freshness;
   const flags = data?.data_quality_flags ?? [];
   const isWindow = data?.screening.mode === "sampled_window";
+  const staleCount = freshness?.stale_records ?? freshness?.records?.filter((record) => record.status === "stale").length ?? 0;
+  const totalFreshnessRecords = freshness?.records?.length ?? data?.screening.input_objects ?? 0;
+  const allEpochsStale = totalFreshnessRecords > 0 && staleCount >= totalFreshnessRecords;
 
   return (
     <main className="dashboard-shell">
@@ -263,6 +269,24 @@ export default function Home() {
             <small>{lastUpdated ? `Fetched ${formatUtc(lastUpdated)}` : "Awaiting first response"}</small>
           </div>
         </div>
+
+        {freshness && staleCount > 0 && (
+          <section className="stale-data-banner" role="alert" aria-live="polite">
+            <div className="stale-data-icon" aria-hidden="true">!</div>
+            <div>
+              <strong>
+                {allEpochsStale ? "All orbital data is stale" : "Some orbital data is stale"}
+              </strong>
+              <p>
+                {staleCount} of {totalFreshnessRecords} records exceed the {formatNumber(freshness.max_age_hours ?? 6)}-hour TLE epoch threshold.
+                {freshness.oldest_age_hours != null
+                  ? ` Oldest orbital epoch: ${formatNumber(freshness.oldest_age_hours, 1)} hours.`
+                  : ""}
+                {" "}Results are for engineering and learning purposes, not operational collision-avoidance decisions.
+              </p>
+            </div>
+          </section>
+        )}
 
         {error && (
           <section className="error-banner" role="alert">
@@ -445,4 +469,3 @@ export default function Home() {
     </main>
   );
 }
-

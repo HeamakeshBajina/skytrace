@@ -2098,3 +2098,46 @@ h6,
   font-optical-sizing: auto;
   letter-spacing: -0.035em;
 }
+
+.stale-data-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 0 0 20px;
+  padding: 16px 18px;
+  border: 1px solid #664d2c;
+  border-radius: 10px;
+  background: #2c2215;
+  color: #ffd08b;
+}
+
+.stale-data-icon {
+  display: grid;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-weight: 800;
+}
+
+.stale-data-banner strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.stale-data-banner p {
+  margin: 0;
+  color: #e7cda6;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .stale-data-banner {
+    padding: 13px;
+  }
+}
