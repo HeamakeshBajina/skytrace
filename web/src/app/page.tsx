@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import OrbitViewer from "./components/OrbitViewer";
 
 type ScreeningResult = {
   object_a: string;
@@ -62,29 +63,6 @@ function formatUtc(value?: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toISOString().replace("T", " ").replace(".000Z", " UTC").replace("Z", " UTC");
-}
-
-function OrbitScene() {
-  return (
-    <div className="orbit-scene" aria-label="Illustrative orbital visualization">
-      <div className="orbit-glow" />
-      <div className="orbit-ring orbit-ring-one" />
-      <div className="orbit-ring orbit-ring-two" />
-      <div className="orbit-ring orbit-ring-three" />
-      <div className="orbit-earth">
-        <div className="earth-land earth-land-one" />
-        <div className="earth-land earth-land-two" />
-      </div>
-      <span className="orbit-satellite orbit-satellite-one">✦</span>
-      <span className="orbit-satellite orbit-satellite-two">✦</span>
-      <span className="orbit-satellite orbit-satellite-three">✦</span>
-      <div className="orbit-caption">
-        <span className="status-dot" />
-        ORBITAL OVERVIEW
-        <span className="orbit-caption-note">Illustrative · Not to scale</span>
-      </div>
-    </div>
-  );
 }
 
 function formatQualityFlag(flag: unknown): string {
@@ -328,16 +306,16 @@ export default function Home() {
         <section className="content-grid">
           <article className="panel orbit-panel">
             <div className="panel-heading">
-              <div><div className="eyebrow">VISUAL CONTEXT</div><h2>Orbital overview</h2></div>
-              <span className="panel-tag">SCHEMATIC</span>
+              <div><div className="eyebrow">LIVE PROPAGATED STATES</div><h2>Orbital overview</h2></div>
+              <span className="panel-tag">3D · SGP4</span>
             </div>
-            <OrbitScene />
+            <OrbitViewer />
             <div className="orbit-legend">
               <span><i className="legend-dot legend-blue" /> Earth</span>
-              <span><i className="legend-dot legend-cyan" /> Orbital paths</span>
-              <span><i className="legend-dot legend-white" /> Markers</span>
+              <span><i className="legend-dot legend-cyan" /> Propagated objects</span>
+              <span><i className="legend-dot legend-white" /> Selected object</span>
             </div>
-            <p className="muted-note">This illustration is not generated from the current TLE states. Live 3D orbit rendering is a future integration.</p>
+            <p className="muted-note">Positions are SGP4 state vectors in TEME, not Earth-fixed coordinates. Marker positions show the returned snapshot; connecting trajectories and collision probabilities are not inferred.</p>
           </article>
 
           <article className="panel status-panel" id="data-quality">

@@ -125,6 +125,116 @@ def health():
     return {"service": "SKYTRACE", "status": "ok"}
 
 
+
+@app.get("/api/orbits")
+def orbits():
+    """Return current SGP4 state vectors for the orbital visualization."""
+    if not FETCH_SCRIPT.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail="TLE refresh script is missing.",
+        )
+
+    snapshot = ensure_fresh_snapshot()
+    if snapshot is None or not snapshot.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="No usable TLE snapshot is available.",
+        )
+
+    try:
+        # Import the existing propagator; do not create a second orbital model.
+        from scripts.screen_approaches import propagate_records
+
+        lines = [
+            line.strip()
+            for line in snapshot.read_text(encoding="utf-8-sig").splitlines()
+            if line.strip()
+        ]
+        if not lines or len(lines) % 3:
+            raise HTTPException(
+                status_code=503,
+                detail="TLE snapshot does not contain complete records.",
+            )
+
+        records = []
+        for index in range(0, len(lines), 3):
+            name, line1, line2 = lines[index:index + 3]
+            if (
+                not line1.startswith("1 ")
+                or not line2.startswith("2 ")
+                or line1[2:7] != line2[2:7]
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="TLE snapshot contains an invalid record.",
+                )
+            records.append((name, line1, line2))
+
+        propagated_at = datetime.now(timezone.utc)
+        states = propagate_records(records, propagated_at)
+
+        metadata_path = snapshot.with_suffix(".json")
+        metadata = {}
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(
+                    metadata_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                metadata = {}
+
+        age_hours = snapshot_age_hours(snapshot)
+
+        payload = {
+            "schema_version": "1.0",
+            "product": "SKYTRACE",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "propagated_at_utc": propagated_at.isoformat(),
+            "data_file": snapshot.name,
+            "source": metadata.get("source", "Unknown; source metadata unavailable"),
+            "snapshot_age_hours": age_hours,
+            "coordinate_frame": "TEME",
+            "units": {
+                "position": "km",
+                "velocity": "km/s",
+                "time": "ISO-8601 UTC",
+            },
+            "limitations": [
+                "Positions are SGP4 states in the TEME reference frame.",
+                "TEME coordinates are not Earth-fixed geographic coordinates.",
+                "TLE age alone does not quantify orbital uncertainty.",
+                "This endpoint does not estimate collision probability.",
+            ],
+            "object_count": len(states),
+            "objects": [
+                {
+                    "name": state["name"],
+                    "catalog_id": state["catalog_id"],
+                    "position_km": list(state["position"]),
+                    "velocity_km_s": list(state["velocity"]),
+                }
+                for state in states
+            ],
+        }
+
+        return JSONResponse(
+            payload,
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "X-SKYTRACE-Engine": "python-sgp4",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except (OSError, ValueError, ImportError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Orbital visualization data could not be generated.",
+        ) from exc
+
+
 @app.get("/api/screening")
 def screening(top: int = Query(default=50, ge=1, le=200)):
     if not SCRIPT.is_file() or not FETCH_SCRIPT.is_file():
