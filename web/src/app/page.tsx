@@ -184,6 +184,84 @@ export default function Home() {
       );
   }, [data, query, sortAscending]);
 
+  const downloadExport = (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsv = () => {
+    if (!data) return;
+    const cell = (value: unknown) =>
+      `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+    const metadata = [
+      ["Report", "SKYTRACE Close-Approach Screening"],
+      ["Generated UTC", data.generated_at_utc ?? ""],
+      ["Source data", data.data_file ?? ""],
+      ["Analysis mode", data.screening.mode],
+      ["Analysis window hours", data.screening.hours],
+      ["Sampling interval seconds", data.screening.step_seconds ?? ""],
+      ["Input objects", data.screening.input_objects],
+      ["Fresh records", data.tle_freshness?.fresh_records ?? ""],
+      ["Stale records", data.tle_freshness?.stale_records ?? ""],
+      ["Limitations", (data.limitations ?? []).join(" | ")],
+    ];
+
+    const header = [
+      "Object A", "Catalog ID A", "Object B", "Catalog ID B",
+      "Separation km", "Time UTC", "Method",
+    ];
+
+    const lines = [
+      ...metadata.map((item) => item.map(cell).join(",")),
+      "",
+      header.map(cell).join(","),
+      ...rows.map((row) => [
+        row.object_a, row.catalog_id_a, row.object_b, row.catalog_id_b,
+        row.separation, row.time_utc, row.method ?? (isWindow ? "Sampled SGP4" : "Instant SGP4"),
+      ].map(cell).join(",")),
+    ];
+
+    downloadExport(
+      "\uFEFF" + lines.join("\r\n"),
+      `skytrace-screening-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`,
+      "text/csv"
+    );
+  };
+
+  const exportJson = () => {
+    if (!data) return;
+    const report = {
+      report_type: "SKYTRACE close-approach screening",
+      exported_at_utc: new Date().toISOString(),
+      applied_filters: {
+        search_query: query,
+        sort_order: sortAscending ? "ascending" : "descending",
+        displayed_result_count: rows.length,
+      },
+      screening: data.screening,
+      source_data_file: data.data_file ?? null,
+      generated_at_utc: data.generated_at_utc ?? null,
+      summary: data.summary,
+      tle_freshness: data.tle_freshness ?? null,
+      data_quality_flags: data.data_quality_flags ?? [],
+      limitations: data.limitations ?? [],
+      displayed_results: rows,
+    };
+
+    downloadExport(
+      JSON.stringify(report, null, 2),
+      `skytrace-report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+      "application/json"
+    );
+  };
   const freshness = data?.tle_freshness;
   const flags = data?.data_quality_flags ?? [];
   const isWindow = data?.screening.mode === "sampled_window";
@@ -375,6 +453,12 @@ export default function Home() {
               />
               <button className="sort-button" onClick={() => setSortAscending((value) => !value)}>
                 {sortAscending ? "Nearest first (ascending)" : "Farthest first (descending)"}
+              </button>
+              <button className="sort-button" onClick={exportCsv} disabled={!data || loading}>
+                Export CSV
+              </button>
+              <button className="sort-button" onClick={exportJson} disabled={!data || loading}>
+                Export JSON
               </button>
             </div>
           </div>
