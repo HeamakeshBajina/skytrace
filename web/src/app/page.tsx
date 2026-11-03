@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import OrbitViewer from "./components/OrbitViewer";
@@ -107,13 +107,20 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [sortAscending, setSortAscending] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [hours, setHours] = useState("0");
+  const [stepSeconds, setStepSeconds] = useState("600");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const response = await fetch("/api/screening?top=200", {
+      const params = new URLSearchParams({
+        top: "200",
+        hours,
+        step_seconds: stepSeconds,
+      });
+      const response = await fetch(`/api/screening?${params.toString()}`, {
         cache: "no-store",
       });
 
@@ -143,7 +150,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hours, stepSeconds]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -370,6 +377,45 @@ export default function Home() {
                 {sortAscending ? "Nearest first (ascending)" : "Farthest first (descending)"}
               </button>
             </div>
+          </div>
+
+          <div className="table-controls" aria-label="Screening settings">
+            <label>
+              <span>Analysis window</span>{" "}
+              <select
+                className="search-input"
+                value={hours}
+                onChange={(event) => setHours(event.target.value)}
+                aria-label="Analysis window in hours"
+              >
+                <option value="0">Instantaneous</option>
+                <option value="1">1 hour</option>
+                <option value="3">3 hours</option>
+                <option value="6">6 hours</option>
+                <option value="12">12 hours</option>
+                <option value="24">24 hours</option>
+              </select>
+            </label>
+            <label>
+              <span>Sampling interval</span>{" "}
+              <select
+                className="search-input"
+                value={stepSeconds}
+                onChange={(event) => setStepSeconds(event.target.value)}
+                aria-label="Sampling interval in seconds"
+              >
+                <option value="60">60 seconds</option>
+                <option value="300">300 seconds</option>
+                <option value="600">600 seconds</option>
+              </select>
+            </label>
+            <button
+              className="sort-button"
+              onClick={() => void refresh()}
+              disabled={loading}
+            >
+              {loading ? "Running..." : "Run screening"}
+            </button>
           </div>
 
           <div className="table-meta">

@@ -15,10 +15,19 @@ export async function GET(request: Request) {
   const top = Number.isFinite(requestedTop)
     ? Math.max(1, Math.min(200, Math.floor(requestedTop)))
     : 50;
+  const requestedHours = Number(url.searchParams.get("hours") ?? "0");
+  const hours = Number.isFinite(requestedHours)
+    ? Math.max(0, Math.min(24, Math.floor(requestedHours)))
+    : 0;
+  const requestedStep = Number(url.searchParams.get("step_seconds") ?? "600");
+  const stepSeconds = Number.isFinite(requestedStep)
+    ? Math.max(10, Math.min(600, Math.floor(requestedStep)))
+    : 600;
 
   try {
     const response = await fetch(
-      `${backend}/api/screening?top=${top}`,
+      `${backend}/api/screening?top=${top}&hours=${hours}` +
+        `&step_seconds=${stepSeconds}`,
       { cache: "no-store", signal: AbortSignal.timeout(125000) }
     );
     const body = await response.text();

@@ -1,6 +1,8 @@
-﻿import { NextResponse } from "next/server";
+import { connection, NextResponse } from "next/server";
+
 
 export async function GET() {
+  await connection();
   const backend = process.env.SKYTRACE_API_URL?.replace(/\/+$/, "");
 
   if (!backend) {

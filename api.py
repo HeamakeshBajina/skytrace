@@ -236,7 +236,11 @@ def orbits():
 
 
 @app.get("/api/screening")
-def screening(top: int = Query(default=50, ge=1, le=200)):
+def screening(
+    top: int = Query(default=50, ge=1, le=200),
+    hours: int = Query(default=0, ge=0, le=24),
+    step_seconds: int = Query(default=60, ge=10, le=600),
+):
     if not SCRIPT.is_file() or not FETCH_SCRIPT.is_file():
         raise HTTPException(
             status_code=500,
@@ -250,7 +254,8 @@ def screening(top: int = Query(default=50, ge=1, le=200)):
             [
                 sys.executable,
                 str(SCRIPT),
-                "--hours", "0",
+                "--hours", str(hours),
+                "--step-seconds", str(step_seconds),
                 "--top", str(top),
                 "--format", "json",
             ],
