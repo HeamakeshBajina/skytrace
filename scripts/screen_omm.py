@@ -14,11 +14,35 @@ from pathlib import Path
 from sgp4.api import jday
 from scripts.fetch_satellites import parse_omm_xml
 from scripts.screen_approaches import propagate_omm_records
-from skytrace.time_window import filter_fresh_omm_records
+from skytrace.time_window import filter_fresh_omm_records, find_duplicate_states
 
 
 def propagate_at(records, when):
     return propagate_omm_records(records, when)
+
+
+
+def duplicate_state_pairs(states):
+    """Return duplicate OMM state pairs keyed by stable catalog IDs."""
+    duplicates = {}
+    for item in find_duplicate_states(states):
+        if item.get("catalog_id_a") is None or item.get("catalog_id_b") is None:
+            continue
+        key = tuple(sorted((str(item["catalog_id_a"]), str(item["catalog_id_b"]))))
+        duplicates[key] = item
+    return duplicates
+
+
+def persistent_duplicate_state_pairs(samples):
+    """Return pairs whose position and velocity remain duplicates at every sample."""
+    persistent = None
+    details = {}
+    for states in samples:
+        current = duplicate_state_pairs(states)
+        details.update(current)
+        keys = set(current)
+        persistent = keys if persistent is None else persistent.intersection(keys)
+    return {key: details[key] for key in (persistent or set())}
 
 
 def main():
@@ -71,18 +95,20 @@ def main():
         if len(states) < 2:
             raise RuntimeError("Fewer than two OMM objects propagated.")
 
+        duplicates = duplicate_state_pairs(states)
+        for item in duplicates.values():
+            duplicate_flags.append({
+                "type": "duplicate_state",
+                **item,
+                "classification": "data_quality_flag_not_collision_alert",
+            })
+
         for i, first in enumerate(states):
             for second in states[i + 1:]:
-                distance = math.dist(first["position"], second["position"])
-                if distance <= 1e-6:
-                    duplicate_flags.append({
-                        "type": "duplicate_state",
-                        "object_a": first["name"],
-                        "object_b": second["name"],
-                        "classification": "data_quality_flag_not_collision_alert",
-                    })
+                key = tuple(sorted((str(first["catalog_id"]), str(second["catalog_id"]))))
+                if key in duplicates:
                     continue
-
+                distance = math.dist(first["position"], second["position"])
                 results.append({
                     "object_a": first["name"],
                     "catalog_id_a": first["catalog_id"],
@@ -97,20 +123,26 @@ def main():
         summary = {
             "objects_propagated": len(states),
             "pairs_evaluated": len(states) * (len(states) - 1) // 2,
+            "duplicate_state_pairs": len(duplicates),
             "results_returned": min(args.top, len(results)),
         }
     else:
         end = start + timedelta(hours=args.hours)
         sample_count = 0
         current = start
+        pair_minima = {}
+        evaluated_pair_keys = set()
+        duplicate_samples = []
 
         while current <= end:
             states = propagate_at(eligible, current)
             sample_count += 1
+            duplicate_samples.append(states)
 
             for i, first in enumerate(states):
                 for second in states[i + 1:]:
-                    key = (first["catalog_id"], second["catalog_id"])
+                    key = tuple(sorted((str(first["catalog_id"]), str(second["catalog_id"]))))
+                    evaluated_pair_keys.add(key)
                     distance = math.dist(first["position"], second["position"])
 
                     previous = pair_minima.get(key)
@@ -126,6 +158,18 @@ def main():
 
             current += timedelta(seconds=args.step_seconds)
 
+        persistent_duplicates = persistent_duplicate_state_pairs(duplicate_samples)
+        for item in persistent_duplicates.values():
+            duplicate_flags.append({
+                "type": "duplicate_state",
+                **item,
+                "samples_evaluated": sample_count,
+                "classification": "data_quality_flag_not_collision_alert",
+            })
+
+        for key in persistent_duplicates:
+            pair_minima.pop(key, None)
+
         results = sorted(
             pair_minima.values(), key=lambda item: item["separation_km"]
         )
@@ -136,9 +180,18 @@ def main():
         summary = {
             "objects_input": len(eligible),
             "samples_evaluated": sample_count,
-            "pairs_evaluated": len(pair_minima),
+            "pairs_evaluated": len(evaluated_pair_keys),
+            "duplicate_state_pairs": len(persistent_duplicates),
             "results_returned": min(args.top, len(results)),
         }
+
+    valid_ages = [
+        item["age_hours"] for item in report
+        if isinstance(item.get("age_hours"), (int, float))
+        and math.isfinite(item["age_hours"])
+    ]
+    youngest_age_hours = min(valid_ages) if valid_ages else None
+    oldest_age_hours = max(valid_ages) if valid_ages else None
 
     payload = {
         "schema_version": "1.0",
@@ -157,6 +210,8 @@ def main():
         },
         "tle_freshness": {
             "max_age_hours": args.max_age_hours,
+            "youngest_age_hours": youngest_age_hours,
+            "oldest_age_hours": oldest_age_hours,
             "records": report,
             "fresh_records": counts["fresh"],
             "stale_records": counts["stale"],
