@@ -1,5 +1,4 @@
 import json
-import math
 import os
 import subprocess
 import sys
@@ -9,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
+from skytrace.epoch_age import add_epoch_age_summary
 
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "scripts" / "screen_approaches.py"
@@ -36,11 +36,6 @@ _last_refresh_failure_detail = None
 
 app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
 
-def add_epoch_age_summary(payload):
-    """Fill epoch-age summary fields from per-record freshness data."""
-    freshness = payload.get("tle_freshness")
-    if not isinstance(freshness, dict):
-        return payload
 
     records = freshness.get("records")
     ages = []

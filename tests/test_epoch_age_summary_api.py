@@ -1,4 +1,4 @@
-from api import add_epoch_age_summary
+from skytrace.epoch_age import add_epoch_age_summary
 
 
 def test_epoch_age_summary_uses_record_minimum_and_maximum():
