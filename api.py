@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import subprocess
 import sys
@@ -34,6 +35,31 @@ _last_refresh_failure_at = None
 _last_refresh_failure_detail = None
 
 app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
+
+def add_epoch_age_summary(payload):
+    """Fill epoch-age summary fields from per-record freshness data."""
+    freshness = payload.get("tle_freshness")
+    if not isinstance(freshness, dict):
+        return payload
+
+    records = freshness.get("records")
+    ages = []
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            age = record.get("age_hours")
+            if (
+                isinstance(age, (int, float))
+                and not isinstance(age, bool)
+                and math.isfinite(age)
+            ):
+                ages.append(float(age))
+
+    freshness["youngest_age_hours"] = min(ages) if ages else None
+    freshness["oldest_age_hours"] = max(ages) if ages else None
+    return payload
+
 
 
 
@@ -467,6 +493,7 @@ def screening(
             raise HTTPException(status_code=503, detail=detail)
 
         payload = json.loads(result.stdout)
+        payload = add_epoch_age_summary(payload)
         payload["element_format"] = "OMM-XML" if is_omm else "TLE"
 
         return JSONResponse(

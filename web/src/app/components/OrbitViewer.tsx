@@ -387,12 +387,26 @@ export default function OrbitViewer() {
     const handleSelection = (event: Event) => {
       const customEvent = event as CustomEvent<string>;
       if (!customEvent.detail) return;
+
+      const selectedEntry = markerEntries.find(
+        (entry) => entry.item.catalog_id === customEvent.detail,
+      );
+
       for (const entry of markerEntries) {
         const selectedMarker = entry.item.catalog_id === customEvent.detail;
         (entry.mesh.material as THREE.MeshBasicMaterial).color.set(
           selectedMarker ? 0xffffff : 0x48d8f5,
         );
         entry.mesh.scale.setScalar(selectedMarker ? 1.65 : 1);
+      }
+
+      // Rotate the camera toward the selected satellite so far-side
+      // objects can be inspected without drawing them through the Earth.
+      if (selectedEntry) {
+        const direction = selectedEntry.mesh.position.clone().normalize();
+        camera.position.copy(direction.multiplyScalar(4.2));
+        controls.target.set(0, 0, 0);
+        controls.update();
       }
     };
 
@@ -474,7 +488,7 @@ export default function OrbitViewer() {
           <span className="status-dot" />
           {payload ? `${payload.object_count} API objects` : "Awaiting data"}
         </div>
-        <div className="orbit-viewer-help">Drag to rotate · Scroll to zoom · Select a marker</div>
+        <div className="orbit-viewer-help">Drag to rotate · Select a satellite to focus it · Scroll to zoom</div>
       </div>
 
       <div className="orbit-object-detail">
