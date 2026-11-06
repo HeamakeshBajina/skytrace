@@ -19,6 +19,7 @@ OUTPUT_DIR = Path("data/raw")
 
 def fetch_spacetrack():
     """Fetch current GP data from Space-Track and select station-related objects."""
+    global LAST_SPACETRACK_PROVIDER_RECORDS
     username = os.getenv("SPACETRACK_USER")
     password = os.getenv("SPACETRACK_PASS")
     if not username or not password:
