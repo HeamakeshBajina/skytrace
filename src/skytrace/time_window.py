@@ -266,3 +266,94 @@ def classify_tle_epoch(epoch, reference_time, max_age_hours=6.0):
     if age > max_age_hours:
         return "stale"
     return "fresh"
+
+def tle_epoch_datetime(line1):
+    'Parse the UTC epoch from columns 19-32 of a TLE line 1.'
+    if not isinstance(line1, str) or len(line1) < 32 or not line1.startswith("1 "):
+        raise ValueError("Invalid TLE line 1: missing epoch field.")
+    field = line1[18:32]
+    if len(field) != 14 or not field[:2].isdigit():
+        raise ValueError("Invalid TLE epoch field.")
+    try:
+        day_of_year = float(field[2:])
+    except ValueError as exc:
+        raise ValueError("Invalid TLE epoch day-of-year.") from exc
+
+    short_year = int(field[:2])
+    year = 2000 + short_year if short_year < 57 else 1900 + short_year
+    year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+    next_year_start = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    days_in_year = (next_year_start - year_start).days
+    if not math.isfinite(day_of_year) or not (1.0 <= day_of_year < days_in_year + 1):
+        raise ValueError("TLE epoch day-of-year is outside the calendar year.")
+    return year_start + timedelta(days=day_of_year - 1.0)
+
+
+def filter_fresh_tle_records(records, reference_time, max_age_hours=6.0):
+    'Return eligible records and a diagnostic report for every input TLE.'
+    eligible = []
+    report = []
+    for name, line1, line2 in records:
+        try:
+            epoch = tle_epoch_datetime(line1)
+            age_hours = tle_age_hours(epoch, reference_time)
+            status = classify_tle_epoch(epoch, reference_time, max_age_hours)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            age_hours = None
+            status = "invalid_epoch"
+
+        report.append({
+            "object": name,
+            "age_hours": age_hours,
+            "status": status,
+        })
+        if status == "fresh":
+            eligible.append((name, line1, line2))
+    return eligible, report
+
+
+
+
+def omm_epoch_datetime(epoch_value, time_system="UTC"):
+    """Parse an OMM EPOCH; naive timestamps are UTC only when declared UTC."""
+    if not isinstance(epoch_value, str) or not epoch_value.strip():
+        raise ValueError("OMM EPOCH must be a non-empty ISO-8601 string.")
+
+    value = epoch_value.strip()
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        if str(time_system).strip().upper() != "UTC":
+            raise ValueError("OMM EPOCH has no UTC offset and TIME_SYSTEM is not UTC.")
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+def filter_fresh_omm_records(records, reference_time, max_age_hours=6.0):
+    if reference_time.tzinfo is None or reference_time.utcoffset() is None:
+        raise ValueError("reference_time must be timezone-aware.")
+    if (isinstance(max_age_hours, bool) or
+            not isinstance(max_age_hours, (int, float)) or
+            not math.isfinite(max_age_hours) or max_age_hours < 0):
+        raise ValueError("max_age_hours must be finite and non-negative.")
+    eligible, report = [], []
+    for record in records:
+        try:
+            time_system = record.get("fields", {}).get("TIME_SYSTEM", "UTC")
+            epoch = omm_epoch_datetime(record["epoch"], time_system)
+            age = tle_age_hours(epoch, reference_time)
+            status = "future_epoch" if age < 0 else "stale" if age > max_age_hours else "fresh"
+        except (KeyError, TypeError, ValueError, OverflowError):
+            age, status = None, "invalid_epoch"
+        report.append({
+            "object": record.get("name", "UNKNOWN"),
+            "catalog_id": str(record.get("norad_id", "")),
+            "age_hours": age,
+            "status": status,
+        })
+        if status == "fresh":
+            eligible.append(record)
+    return eligible, report

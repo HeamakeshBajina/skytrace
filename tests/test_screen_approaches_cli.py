@@ -33,8 +33,11 @@ def with_valid_checksum(line):
 
 def make_test_tle_text():
     """Create two distinct TLE records with valid checksums."""
+    first_line1 = with_valid_checksum(
+        ISS_LINE1[:18] + "26295.45000000" + ISS_LINE1[32:]
+    )
     second_line1 = with_valid_checksum(
-        ISS_LINE1[:2] + "25545" + ISS_LINE1[7:]
+        first_line1[:2] + "25545" + first_line1[7:]
     )
 
     # The mean-anomaly field is exactly nine characters: positions 43:52.
@@ -46,7 +49,7 @@ def make_test_tle_text():
     )
 
     records = [
-        ("TEST OBJECT A", ISS_LINE1, ISS_LINE2),
+        ("TEST OBJECT A", first_line1, ISS_LINE2),
         ("TEST OBJECT B", second_line1, second_line2),
     ]
 

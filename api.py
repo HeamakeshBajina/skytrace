@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import time
@@ -11,7 +12,23 @@ from fastapi.responses import JSONResponse
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "scripts" / "screen_approaches.py"
 FETCH_SCRIPT = ROOT / "scripts" / "fetch_satellites.py"
-MAX_TLE_AGE_HOURS = 6
+OMM_SCRIPT = ROOT / "scripts" / "screen_omm.py"
+def configured_max_tle_age_hours():
+    raw_value = os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "6")
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "SKYTRACE_MAX_TLE_AGE_HOURS must be a number between 0.1 and 72."
+        ) from exc
+    if not 0.1 <= value <= 72:
+        raise RuntimeError(
+            "SKYTRACE_MAX_TLE_AGE_HOURS must be between 0.1 and 72 hours."
+        )
+    return value
+
+
+MAX_TLE_AGE_HOURS = configured_max_tle_age_hours()
 REFRESH_FAILURE_COOLDOWN_SECONDS = 3600
 _last_refresh_failure_at = None
 _last_refresh_failure_detail = None
@@ -19,13 +36,25 @@ _last_refresh_failure_detail = None
 app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
 
 
-def latest_snapshot():
-    files = sorted(
-        (ROOT / "data" / "raw").glob("stations_*.tle"),
-        key=lambda path: path.stat().st_mtime,
+
+def snapshot_candidates():
+    raw = ROOT / "data" / "raw"
+    omm = sorted(
+        raw.glob("stations_*.omm.xml"),
+        key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    return files[0] if files else None
+    tle = sorted(
+        raw.glob("stations_*.tle"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return omm + tle
+
+
+def latest_snapshot():
+    candidates = snapshot_candidates()
+    return candidates[0] if candidates else None
 
 
 def snapshot_age_hours(tle_path):
@@ -50,17 +79,98 @@ def snapshot_age_hours(tle_path):
         return None
 
 
+def load_snapshot_records(tle_path):
+    try:
+        lines = [
+            line.strip()
+            for line in tle_path.read_text(encoding="utf-8-sig").splitlines()
+            if line.strip()
+        ]
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="TLE snapshot could not be read.") from exc
+
+    if not lines or len(lines) % 3:
+        raise HTTPException(status_code=503, detail="TLE snapshot does not contain complete records.")
+
+    records = []
+    for index in range(0, len(lines), 3):
+        name, line1, line2 = lines[index:index + 3]
+        if not line1.startswith("1 ") or not line2.startswith("2 ") or line1[2:7] != line2[2:7]:
+            raise HTTPException(status_code=503, detail="TLE snapshot contains an invalid record.")
+        records.append((name, line1, line2))
+    return records
+
+
+
+def assess_snapshot(snapshot_path, reference_time=None):
+    reference_time = reference_time or datetime.now(timezone.utc)
+
+    if snapshot_path.name.endswith(".omm.xml"):
+        from scripts.fetch_satellites import parse_omm_xml
+        from skytrace.time_window import filter_fresh_omm_records
+
+        try:
+            text = snapshot_path.read_text(encoding="utf-8-sig")
+            records = parse_omm_xml(text)
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="OMM snapshot could not be parsed.",
+            ) from exc
+
+        eligible, report = filter_fresh_omm_records(
+            records, reference_time, MAX_TLE_AGE_HOURS
+        )
+    else:
+        from skytrace.time_window import filter_fresh_tle_records
+        records = load_snapshot_records(snapshot_path)
+        eligible, report = filter_fresh_tle_records(
+            records, reference_time, MAX_TLE_AGE_HOURS
+        )
+
+    counts = {
+        "fresh": 0,
+        "stale": 0,
+        "future_epoch": 0,
+        "invalid_epoch": 0,
+    }
+    for item in report:
+        status = item.get("status")
+        counts[status] = counts.get(status, 0) + 1
+
+    return records, eligible, report, counts
+
+
+
 def ensure_fresh_snapshot():
     global _last_refresh_failure_at, _last_refresh_failure_detail
 
-    current = latest_snapshot()
-    age = snapshot_age_hours(current) if current else None
+    def find_usable_snapshot():
+        last_detail = None
+        for candidate in snapshot_candidates():
+            try:
+                _, eligible, _, counts = assess_snapshot(candidate)
+                if len(eligible) >= 2:
+                    return candidate, None
+                candidate_detail = (
+                    f"{candidate.name}: fewer than two fresh records "
+                    f"(fresh={counts['fresh']}, stale={counts['stale']}, "
+                    f"future_epoch={counts['future_epoch']}, "
+                    f"invalid_epoch={counts['invalid_epoch']})."
+                )
+                if last_detail is None:
+                    last_detail = candidate_detail
+            except HTTPException as exc:
+                last_detail = str(exc.detail)
 
-    # A verifiably fresh snapshot can be used without contacting the source.
-    if current is not None and age is not None and 0 <= age <= MAX_TLE_AGE_HOURS:
+        return None, last_detail
+
+    current, detail = find_usable_snapshot()
+    if current is not None:
+        _last_refresh_failure_at = None
+        _last_refresh_failure_detail = None
         return current
 
-    # Avoid repeated upstream requests after a recent failed refresh.
     if _last_refresh_failure_at is not None:
         elapsed = time.monotonic() - _last_refresh_failure_at
         remaining = REFRESH_FAILURE_COOLDOWN_SECONDS - elapsed
@@ -68,10 +178,17 @@ def ensure_fresh_snapshot():
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "TLE refresh recently failed; retry in about "
-                    f"{int(remaining) + 1} seconds. Screening was not run."
+                    "No usable fresh orbital snapshot is available. "
+                    f"Refresh retry in about {int(remaining) + 1} seconds. "
+                    f"{_last_refresh_failure_detail or detail or ''}"
                 ),
             )
+
+    if not FETCH_SCRIPT.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail="Satellite data refresh script is missing.",
+        )
 
     try:
         refresh = subprocess.run(
@@ -84,32 +201,31 @@ def ensure_fresh_snapshot():
         )
     except subprocess.TimeoutExpired as exc:
         _last_refresh_failure_at = time.monotonic()
-        _last_refresh_failure_detail = "TLE refresh timed out."
+        _last_refresh_failure_detail = "Satellite data refresh timed out."
         raise HTTPException(
             status_code=503,
-            detail="TLE refresh timed out; screening was not run.",
+            detail=_last_refresh_failure_detail,
         ) from exc
 
     if refresh.returncode != 0:
         _last_refresh_failure_at = time.monotonic()
         _last_refresh_failure_detail = (
-            refresh.stderr.strip()[-500:]
+            refresh.stderr.strip()[-1000:]
             or "Satellite data source unavailable."
         )
         raise HTTPException(
             status_code=503,
-            detail=(
-                "TLE refresh failed; screening was not run. "
-                + _last_refresh_failure_detail
-            ),
+            detail="Satellite data refresh failed. "
+                   + _last_refresh_failure_detail,
         )
 
-    current = latest_snapshot()
-    age = snapshot_age_hours(current) if current else None
-
-    if current is None or age is None or age < 0 or age > MAX_TLE_AGE_HOURS:
+    current, detail = find_usable_snapshot()
+    if current is None:
         _last_refresh_failure_at = time.monotonic()
-        _last_refresh_failure_detail = "No verifiably fresh TLE snapshot is available."
+        _last_refresh_failure_detail = (
+            "Refresh completed, but no snapshot contains at least "
+            "two fresh records. " + (detail or "")
+        )
         raise HTTPException(
             status_code=503,
             detail=_last_refresh_failure_detail,
@@ -126,53 +242,42 @@ def health():
 
 
 
+
 @app.get("/api/orbits")
 def orbits():
-    """Return current SGP4 state vectors for the orbital visualization."""
-    if not FETCH_SCRIPT.is_file():
-        raise HTTPException(
-            status_code=500,
-            detail="TLE refresh script is missing.",
-        )
-
+    """Return current SGP4 state vectors from the freshest available format."""
     snapshot = ensure_fresh_snapshot()
-    if snapshot is None or not snapshot.is_file():
+    propagated_at = datetime.now(timezone.utc)
+
+    records, eligible, freshness_report, freshness_counts = assess_snapshot(
+        snapshot, propagated_at
+    )
+
+    if len(eligible) < 2:
         raise HTTPException(
             status_code=503,
-            detail="No usable TLE snapshot is available.",
+            detail="Fewer than two fresh orbital records are available.",
         )
 
-    try:
-        # Import the existing propagator; do not create a second orbital model.
-        from scripts.screen_approaches import propagate_records
+    is_omm = snapshot.name.endswith(".omm.xml")
 
-        lines = [
-            line.strip()
-            for line in snapshot.read_text(encoding="utf-8-sig").splitlines()
-            if line.strip()
-        ]
-        if not lines or len(lines) % 3:
+    try:
+        if is_omm:
+            from scripts.screen_approaches import propagate_omm_records
+            states = propagate_omm_records(eligible, propagated_at)
+            element_format = "OMM-XML"
+            engine = "python-sgp4-omm"
+        else:
+            from scripts.screen_approaches import propagate_records
+            states = propagate_records(eligible, propagated_at)
+            element_format = "TLE"
+            engine = "python-sgp4-tle"
+
+        if len(states) < 2:
             raise HTTPException(
                 status_code=503,
-                detail="TLE snapshot does not contain complete records.",
+                detail="Fewer than two orbital objects propagated successfully.",
             )
-
-        records = []
-        for index in range(0, len(lines), 3):
-            name, line1, line2 = lines[index:index + 3]
-            if (
-                not line1.startswith("1 ")
-                or not line2.startswith("2 ")
-                or line1[2:7] != line2[2:7]
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail="TLE snapshot contains an invalid record.",
-                )
-            records.append((name, line1, line2))
-
-        propagated_at = datetime.now(timezone.utc)
-        states = propagate_records(records, propagated_at)
 
         metadata_path = snapshot.with_suffix(".json")
         metadata = {}
@@ -189,11 +294,22 @@ def orbits():
         payload = {
             "schema_version": "1.0",
             "product": "SKYTRACE",
+            "element_format": element_format,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "propagated_at_utc": propagated_at.isoformat(),
             "data_file": snapshot.name,
-            "source": metadata.get("source", "Unknown; source metadata unavailable"),
+            "source": metadata.get(
+                "source", "Unknown; source metadata unavailable"
+            ),
             "snapshot_age_hours": age_hours,
+            "retrieval_age_hours": age_hours,
+            "tle_freshness": {
+                "max_age_hours": MAX_TLE_AGE_HOURS,
+                "eligible_count": len(eligible),
+                "excluded_count": len(records) - len(eligible),
+                "counts": freshness_counts,
+                "records": freshness_report,
+            },
             "coordinate_frame": "TEME",
             "units": {
                 "position": "km",
@@ -203,7 +319,7 @@ def orbits():
             "limitations": [
                 "Positions are SGP4 states in the TEME reference frame.",
                 "TEME coordinates are not Earth-fixed geographic coordinates.",
-                "TLE age alone does not quantify orbital uncertainty.",
+                "Element age alone does not quantify orbital uncertainty.",
                 "This endpoint does not estimate collision probability.",
             ],
             "object_count": len(states),
@@ -222,17 +338,18 @@ def orbits():
             payload,
             headers={
                 "Cache-Control": "no-store, max-age=0",
-                "X-SKYTRACE-Engine": "python-sgp4",
+                "X-SKYTRACE-Engine": engine,
             },
         )
 
     except HTTPException:
         raise
-    except (OSError, ValueError, ImportError) as exc:
+    except (OSError, ValueError, ImportError, RuntimeError, KeyError) as exc:
         raise HTTPException(
             status_code=503,
-            detail="Orbital visualization data could not be generated.",
+            detail=f"Orbital visualization data could not be generated: {exc}",
         ) from exc
+
 
 
 @app.get("/api/screening")
@@ -241,24 +358,41 @@ def screening(
     hours: int = Query(default=0, ge=0, le=24),
     step_seconds: int = Query(default=60, ge=10, le=600),
 ):
-    if not SCRIPT.is_file() or not FETCH_SCRIPT.is_file():
+    snapshot = ensure_fresh_snapshot()
+    is_omm = snapshot.name.endswith(".omm.xml")
+
+    selected_script = (
+        ROOT / "scripts" / "screen_omm.py"
+        if is_omm else SCRIPT
+    )
+
+    if not selected_script.is_file():
         raise HTTPException(
             status_code=500,
-            detail="Screening or TLE refresh script is missing.",
+            detail="Selected orbital screening engine is missing.",
         )
 
-    ensure_fresh_snapshot()
+    command = [sys.executable, str(selected_script)]
+
+    if is_omm:
+        command.extend([
+            "--data-file", str(snapshot),
+            "--hours", str(hours),
+            "--step-seconds", str(step_seconds),
+            "--top", str(top),
+            "--max-age-hours", str(MAX_TLE_AGE_HOURS),
+        ])
+    else:
+        command.extend([
+            "--hours", str(hours),
+            "--step-seconds", str(step_seconds),
+            "--top", str(top),
+            "--format", "json",
+        ])
 
     try:
         result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--hours", str(hours),
-                "--step-seconds", str(step_seconds),
-                "--top", str(top),
-                "--format", "json",
-            ],
+            command,
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -267,20 +401,70 @@ def screening(
         )
 
         if result.returncode != 0:
-            detail = result.stderr.strip()[-2000:] or "Screening engine failed."
+            raw_detail = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Screening engine failed."
+            )
+
+            if (
+                is_omm
+                and "OMM screening stopped: fewer than two fresh records."
+                in raw_detail
+            ):
+                freshness_counts = {}
+                json_start = raw_detail.rfind("{")
+                json_end = raw_detail.rfind("}")
+
+                if json_start >= 0 and json_end > json_start:
+                    try:
+                        freshness_counts = json.loads(
+                            raw_detail[json_start:json_end + 1]
+                        )
+                    except (ValueError, TypeError):
+                        freshness_counts = {}
+
+                detail = {
+                    "code": "insufficient_fresh_omm_records",
+                    "message": (
+                        "OMM screening requires at least two fresh orbital "
+                        "records. Screening was safely not performed."
+                    ),
+                    "snapshot": snapshot.name,
+                    "max_age_hours": MAX_TLE_AGE_HOURS,
+                    "freshness": freshness_counts,
+                }
+            else:
+                detail = {
+                    "code": "screening_engine_failed",
+                    "message": (
+                        "The screening engine failed. Check backend logs "
+                        "for diagnostic details."
+                    ),
+                }
+
             raise HTTPException(status_code=503, detail=detail)
 
         payload = json.loads(result.stdout)
+        payload["element_format"] = "OMM-XML" if is_omm else "TLE"
+
         return JSONResponse(
             payload,
             headers={
                 "Cache-Control": "no-store, max-age=0",
-                "X-SKYTRACE-Engine": "python-sgp4",
+                "X-SKYTRACE-Engine": (
+                    "python-sgp4-omm" if is_omm else "python-sgp4-tle"
+                ),
             },
         )
 
+    except HTTPException:
+        raise
     except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=504, detail="Screening timed out.") from exc
+        raise HTTPException(
+            status_code=504,
+            detail="Screening timed out.",
+        ) from exc
     except json.JSONDecodeError as exc:
         raise HTTPException(
             status_code=500,

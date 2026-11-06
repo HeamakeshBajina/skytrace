@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import OrbitViewer from "./components/OrbitViewer";
@@ -127,13 +127,45 @@ export default function Home() {
       const payload: unknown = await response.json();
 
       if (!response.ok) {
-        const message =
+        const detail =
           typeof payload === "object" &&
           payload !== null &&
-          "detail" in payload &&
-          typeof payload.detail === "string"
+          "detail" in payload
             ? payload.detail
-            : "The screening API returned an error.";
+            : null;
+
+        let message = "The screening API returned an error.";
+
+        if (typeof detail === "string") {
+          message = detail;
+        } else if (typeof detail === "object" && detail !== null) {
+          const structured = detail as Record<string, unknown>;
+
+          if (typeof structured.message === "string") {
+            message = structured.message;
+          }
+
+          const freshness = structured.freshness;
+
+          if (typeof freshness === "object" && freshness !== null) {
+            const counts = freshness as Record<string, unknown>;
+            const summary: string[] = [];
+
+            if (typeof counts.fresh === "number") summary.push(`fresh: ${counts.fresh}`);
+            if (typeof counts.stale === "number") summary.push(`stale: ${counts.stale}`);
+            if (typeof counts.future_epoch === "number") summary.push(`future epochs: ${counts.future_epoch}`);
+            if (typeof counts.invalid_epoch === "number") summary.push(`invalid epochs: ${counts.invalid_epoch}`);
+
+            if (summary.length > 0) {
+              message += ` (${summary.join(", ")}).`;
+            }
+          }
+
+          if (typeof structured.max_age_hours === "number") {
+            message += ` Freshness threshold: ${structured.max_age_hours} hours.`;
+          }
+        }
+
         throw new Error(message);
       }
 

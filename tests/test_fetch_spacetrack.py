@@ -69,8 +69,9 @@ def test_spacetrack_fetch_authenticates_and_filters_stations(monkeypatch):
     assert login_fields["identity"] == ["test@example.com"]
     assert login_fields["password"] == ["test-password"]
 
-    _, query_timeout = fake_opener.requests[1]
+    query_request, query_timeout = fake_opener.requests[1]
     assert query_timeout == 45
+    assert "epoch/%3Enow-1/format/json" in query_request.full_url
 
 
 def test_spacetrack_requires_both_credentials(monkeypatch):

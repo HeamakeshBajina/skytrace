@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 
 URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle"
+OMM_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=STATIONS&FORMAT=XML"
 OUTPUT_DIR = Path("data/raw")
 
 
@@ -49,7 +50,7 @@ def fetch_spacetrack():
     query_url = (
         base_url
         + "/basicspacedata/query/class/gp/decay_date/null-val/"
-        + "epoch/%3Enow-10/format/json"
+        + "epoch/%3Enow-1/format/json"
     )
     query_request = urllib.request.Request(
         query_url,
@@ -91,6 +92,43 @@ def fetch_spacetrack():
         )
 
     return "\n".join(lines) + "\n", query_url
+
+
+
+def parse_omm_xml(xml_text):
+    from io import StringIO
+    from sgp4 import omm
+    from sgp4.api import Satrec
+    if not isinstance(xml_text, str) or not xml_text.strip():
+        raise ValueError("OMM XML response is empty.")
+    parsed = []
+    for fields in omm.parse_xml(StringIO(xml_text)):
+        name = str(fields.get("OBJECT_NAME") or fields.get("OBJECT_ID") or "").strip()
+        catalog_id = str(fields.get("NORAD_CAT_ID") or "").strip()
+        epoch = str(fields.get("EPOCH") or "").strip()
+        if not catalog_id.isdigit() or not epoch:
+            raise ValueError("OMM record is missing a valid NORAD_CAT_ID or EPOCH.")
+        satellite = Satrec()
+        omm.initialize(satellite, fields)
+        parsed.append({
+            "name": name or f"OBJECT {catalog_id}",
+            "norad_id": catalog_id,
+            "epoch": epoch,
+            "fields": dict(fields),
+            "satellite": satellite,
+        })
+    if not parsed:
+        raise ValueError("OMM XML contained no usable orbital records.")
+    return parsed
+
+
+def fetch_celestrak_omm():
+    request = urllib.request.Request(
+        OMM_URL,
+        headers={"User-Agent": "SKYTRACE/1.2 OMM data fetcher"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read().decode("utf-8"), response.geturl()
 
 
 def tle_checksum(line):
@@ -212,12 +250,35 @@ def save_data_pair(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch, validate, and save station TLE data."
-    )
-    parser.parse_args()
+    parser = argparse.ArgumentParser(description="Fetch and validate station orbital data.")
+    parser.add_argument("--format", choices=("tle", "omm-xml"), default="tle")
+    args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.format == "omm-xml":
+        xml_text, source_url = fetch_celestrak_omm()
+        records = parse_omm_xml(xml_text)
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        data_path = OUTPUT_DIR / f"stations_{stamp}.omm.xml"
+        metadata_path = OUTPUT_DIR / f"stations_{stamp}.omm.json"
+        metadata = {
+            "source": source_url,
+            "retrieved_at_utc": retrieved_at,
+            "record_count": len(records),
+            "format": "OMM-XML",
+            "validation": "Parsed and initialized with python-sgp4; not an independent accuracy validation",
+        }
+        save_data_pair(data_path, metadata_path, xml_text, json.dumps(metadata, indent=2))
+        print("\n=== SKYTRACE OMM DATA PIPELINE ===")
+        print(f"Records initialized: {len(records)}")
+        print(f"Retrieved at UTC:    {retrieved_at}")
+        print(f"OMM XML saved:       {data_path}")
+        print(f"Metadata saved:      {metadata_path}")
+        for record in records[:5]:
+            print(f"  {record['norad_id']}  {record['name']}")
+        return
 
     raw_data = None
     source_url = None

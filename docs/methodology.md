@@ -1,82 +1,128 @@
-# SKYTRACE methodology
+# SKYTRACE — Methodology
 
-## Scope
+## 1. Scope and distinct calculation paths
 
-SKYTRACE currently contains two distinct calculation paths:
+SKYTRACE contains separate models and data-processing paths:
 
-1. An idealized circular-orbit model for illustrating relationships between altitude, orbital speed, and orbital period.
-2. A TLE-based SGP4 workflow for propagating satellite states and screening relative separation.
+1. An idealized circular-orbit model illustrating the relationship between altitude, orbital speed, and orbital period.
+2. A TLE ingestion and SGP4 propagation path.
+3. An OMM XML ingestion and SGP4 propagation path.
+4. Instantaneous and sampled-window geometric separation screening.
 
-These paths serve different purposes. The circular-orbit equations are not used as a substitute for SGP4 propagation of the TLE records.
+The circular-orbit equations are not used as a substitute for SGP4 propagation of GP element records.
 
-## Idealized circular-orbit model
-
-### Model
+## 2. Idealized circular-orbit model
 
 The orbital radius is approximated as mean Earth radius plus altitude:
 
 `r = R_E + h`
 
-For a circular two-body orbit, orbital speed and period are:
+For a circular two-body orbit:
 
 `v = sqrt(mu / r)`
 
 `T = 2 pi sqrt(r^3 / mu)`
 
-The implementation uses `R_E = 6371.0 km` and `mu = 398600.4418 km^3/s^2`. Units are consistently expressed in kilometres and seconds.
+The implementation uses `R_E = 6371.0 km` and `mu = 398600.4418 km^3/s^2`. Units are kilometres and seconds.
 
-### Assumptions and limitations
+Assumptions and limitations:
 
 - The orbit is circular.
-- Earth is treated as a spherical body with a constant gravitational parameter.
+- Earth is treated as spherical with a constant gravitational parameter.
 - Atmospheric drag, Earth's oblateness, lunar and solar perturbations, and spacecraft manoeuvres are ignored.
 - These equations do not propagate real object data and cannot independently predict conjunctions or collision probabilities.
 - An altitude of zero is mathematically accepted by the function but does not describe a viable orbit above Earth's surface.
 
-## TLE ingestion and propagation
+## 3. GP element ingestion
 
-The data workflow retrieves station Two-Line Element (TLE) records and checks their structure, matching catalog identifiers, and line checksums before saving data. The propagation and screening commands select the latest available station TLE snapshot in `data/raw/`.
+### 3.1 TLE path
 
-For propagation, each TLE pair is parsed into an SGP4 satellite record. The propagated state contains position and velocity in the TEME reference frame, with position in kilometres and velocity in kilometres per second. Propagation errors and non-finite state values are rejected rather than treated as valid results.
+The TLE fetcher retrieves station-group GP data and validates record structure, matching catalog identifiers, and line checksums before saving the data and metadata. TLE records are parsed into SGP4 satellite objects. The TLE catalog field supports only five-digit identifiers.
 
-TLE epoch age is reported as a data-freshness indicator. Age is not an estimate of orbital uncertainty and does not, by itself, establish the accuracy of a propagated state.
+### 3.2 OMM XML path
 
-## Close-approach screening
+The OMM fetcher retrieves station-group GP data in XML form, parses OMM records, and initializes SGP4 satellite objects using `python-sgp4`. Snapshot metadata records the source URL, retrieval timestamp, record count, format, and validation description.
 
-### Instantaneous mode
+OMM is a standardized message representation for orbital mean elements and associated metadata. It can represent catalog identifiers beyond the five-digit TLE limitation. OMM XML is not inherently more accurate than TLE: the underlying element source, epoch, and fit quality remain important.
 
-Instantaneous screening propagates the available records to one timezone-aware timestamp and computes pairwise Euclidean separation between propagated position vectors:
+### 3.3 Snapshot discovery and fallback
+
+The API's snapshot discovery prefers OMM snapshots and retains a TLE fallback path. Each candidate is assessed against the configured freshness rule. A recently retrieved file is not assumed to contain recent elements: retrieval timestamp and element epoch are distinct.
+
+The fetcher can use Space-Track when the required credentials are configured; otherwise its implemented fallback path uses CelesTrak. Data provenance is retained in snapshot metadata.
+
+## 4. Epoch interpretation and freshness
+
+Freshness is computed from each record's element epoch relative to a timezone-aware reference time.
+
+- TLE epochs are parsed from the TLE epoch field.
+- OMM epochs are parsed from the OMM `EPOCH` field.
+- Explicit timezone offsets are normalized to UTC.
+- A naive OMM epoch is interpreted as UTC only when `TIME_SYSTEM=UTC`.
+- A naive OMM epoch without that supported UTC declaration is invalid.
+- Future epochs and invalid epochs are not treated as fresh.
+
+The default maximum age is six hours. The configurable range is 0.1–72 hours. The API/TLE path reads `SKYTRACE_MAX_TLE_AGE_HOURS`; the OMM screening CLI accepts `--max-age-hours`. A threshold is an inclusion policy, not a model of orbital uncertainty and not a claim that an element set is accurate up to that age.
+
+Where fewer than two eligible records are available, screening stops. The API may return HTTP 503 with a structured insufficient-fresh-data detail. This is deliberate safety behavior, distinct from backend process health.
+
+## 5. SGP4 propagation and state representation
+
+TLE and OMM GP records are initialized for SGP4 propagation. The current implementation reports position in kilometres and velocity in kilometres per second in the TEME reference frame. Propagation errors and non-finite state values must not be treated as valid states.
+
+The fact that two input formats initialize the same propagation model does not imply that their source elements are identical or equally current.
+
+## 6. Close-approach screening
+
+### 6.1 Instantaneous mode
+
+Instantaneous screening propagates eligible records to one timezone-aware timestamp and computes pairwise Euclidean separation:
 
 `d = sqrt((x2-x1)^2 + (y2-y1)^2 + (z2-z1)^2)`
 
-The separation is expressed in kilometres. Pairs with numerically duplicate propagated states are flagged as data-quality findings and excluded from the ordinary closest-pair ranking.
+The result is expressed in kilometres. Numerically duplicate propagated states are flagged as data-quality findings and excluded from ordinary closest-pair ranking.
 
-### Sampled-window mode
+The dashboard's current screening action is instantaneous.
 
-Sampled-window screening evaluates pairs at discrete timestamps from the requested start through the end of the interval. The end timestamp is included even when the interval length is not an exact multiple of the requested sampling step.
+### 6.2 Sampled-window mode
 
-For each successfully evaluated pair, the reported separation is the smallest separation among the timestamps actually sampled. The method records the time of that sampled minimum and the number of samples evaluated.
+The TLE screening CLI supports sampled-window operation through `scripts/screen_approaches.py`. The OMM sampled-window CLI is `scripts/screen_omm.py`; it accepts a required OMM XML `--data-file`, plus `--hours`, `--step-seconds`, `--top`, `--max-age-hours`, and optional `--start` arguments.
 
-**A sampled minimum is not guaranteed to be the continuous-time minimum.** A close approach occurring between sample timestamps may be missed or have a smaller actual separation than the reported value. Results depend on the selected time interval, sampling step, and input TLE quality.
+Sampled-window screening evaluates pairs at discrete timestamps across the requested interval. The end timestamp is included even when the interval length is not an exact multiple of the requested sampling step. For each evaluated pair, the reported separation is the smallest separation among timestamps actually sampled.
 
-Pairs with numerically matching states across the sampled window are flagged as data-quality findings, not as collision alerts. Propagation failures are reported rather than silently represented as successful results.
+**A sampled minimum is not guaranteed to be the continuous-time minimum.** A closer approach between sample timestamps may be missed. Results depend on the selected interval, sampling step, and input element quality. Propagation failures are reported rather than silently represented as successful results.
 
-## JSON screening contract
+## 7. JSON screening contract
 
-The command-line screening tool supports text output and a machine-readable JSON format selected with `--format json`. JSON documents include a schema version, generation timestamp, input data file, screening settings, TLE freshness records, units, screening results, data-quality flags, a summary, and limitations.
+The TLE screening CLI supports text output and machine-readable JSON selected with `--format json`. Its versioned JSON document includes generation metadata, input file, screening settings, timestamps, freshness information, units, results, data-quality flags, a summary, and limitations.
 
-Screening result records identify objects by name and catalog identifier. Consumers should validate the schema version and treat the output as preliminary geometric screening, not as a collision probability or an operational risk classification.
+Consumers should validate the schema version and treat output as preliminary geometric screening, not as collision probability or operational risk classification. Do not assume the OMM CLI has the identical JSON schema unless verified from its current output.
 
-## Verification
+## 8. API behavior
 
-The automated test suite covers scientific calculations, input validation, propagation and screening command-line behavior, and the JSON output contract. Tests using fixed TLE fixtures provide reproducible checks of CLI behavior. Successful tests establish that the tested implementation meets those test expectations; they do not independently validate orbital predictions against operational conjunction data.
+The FastAPI service exposes:
 
-Further scientific validation should compare selected propagated cases against a trusted independent reference, documenting the reference, epoch, coordinate frame, units, and acceptable tolerances.
+- `GET /health` — process health.
+- `GET /api/orbits` — orbital data for the dashboard, subject to snapshot discovery and freshness checks.
+- `GET /api/screening` — dashboard screening response, currently instantaneous and subject to the same input-data safety checks.
 
-## Overall limitations
+A healthy `/health` response does not prove fresh orbital data is available. HTTP 503 can indicate that no candidate snapshot contains at least two fresh records, or that a refresh retry cooldown is active. Error details should identify the data condition without exposing internal tracebacks.
 
-- TLE data quality and age affect the interpretation of propagated states.
-- The current sampled-window method does not guarantee a continuous-time minimum.
-- Duplicate-state flags are data-quality diagnostics.
+## 9. Verification
+
+The automated test suite covers scientific calculations, input validation, propagation and screening CLI behavior, freshness handling, and related API/data paths. Fixed fixtures provide reproducible software checks.
+
+Passing tests establish that the tested implementation meets those test expectations; they do not independently validate orbital predictions against operational conjunction data. Further scientific validation should compare selected propagated cases against a trusted independent reference and document the reference, epoch, coordinate frame, units, and tolerances.
+
+## 10. Overall limitations
+
+- GP element age and provenance affect interpretation; age alone does not quantify orbital uncertainty.
+- Sampled-window minima are discrete sampled minima, not guaranteed continuous-time minima.
 - No collision probability, covariance-based uncertainty propagation, or operational risk assessment is performed.
-- Results should not be used as the sole basis for spacecraft manoeuvres or collision-avoidance decisions.
+- Duplicate-state flags are data-quality diagnostics, not collision alerts.
+- The project is an exploratory engineering prototype, not a validated operational collision-warning or collision-avoidance service.
+- Results must not be used as the sole basis for spacecraft manoeuvres or collision-avoidance decisions.
+
+## External format reference
+
+CelesTrak documents the supported GP formats, including TLE and OMM XML, at https://celestrak.org/NORAD/documentation/gp-data-formats.php.

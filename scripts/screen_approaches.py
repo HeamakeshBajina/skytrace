@@ -1,17 +1,17 @@
 """Preliminary satellite close-approach screening from TLE data."""
 import argparse
 import json
+import os
 from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
 
 from sgp4.api import Satrec, jday
 from skytrace.time_window import (
-    classify_tle_epoch,
+    filter_fresh_tle_records,
     find_duplicate_pairs_over_window,
     find_duplicate_states,
     sampled_minimum_separation,
-    tle_age_hours,
 )
 
 
@@ -43,6 +43,33 @@ def propagate_records(records, when):
         })
     return states
 
+
+
+
+
+def propagate_omm_records(records, when):
+    if when.tzinfo is None or when.utcoffset() is None:
+        raise ValueError("Propagation time must be timezone-aware.")
+    when = when.astimezone(timezone.utc)
+    jd, fr = jday(
+        when.year, when.month, when.day,
+        when.hour, when.minute,
+        when.second + when.microsecond / 1_000_000,
+    )
+    states = []
+    for record in records:
+        sat = record["satellite"]
+        error, position, velocity = sat.sgp4(jd, fr)
+        if error != 0 or not all(math.isfinite(v) for v in (*position, *velocity)):
+            continue
+        states.append({
+            "name": record["name"],
+            "catalog_id": str(record["norad_id"]),
+            "position": tuple(position),
+            "velocity": tuple(velocity),
+            "epoch": sat.jdsatepoch + sat.jdsatepochF,
+        })
+    return states
 
 
 def identical_state_pairs(states, tolerance_km=1e-6):
@@ -101,23 +128,21 @@ def run_json_screening(args):
     data_file, records = load_latest_records()
     start = args.start or datetime.now(timezone.utc)
 
-    ages = []
-    future_epochs = []
-    for name, line1, line2 in records:
-        satellite = Satrec.twoline2rv(line1, line2)
-        epoch_jd = satellite.jdsatepoch + satellite.jdsatepochF
-        epoch_datetime = datetime(
-            2000, 1, 1, 12, tzinfo=timezone.utc
-        ) + timedelta(days=epoch_jd - 2451545.0)
-        age_hours = tle_age_hours(epoch_datetime, start)
-        status = classify_tle_epoch(epoch_datetime, start)
-        ages.append({
-            "object": name,
-            "age_hours": age_hours,
-            "status": status,
-        })
-        if status == "future_epoch":
-            future_epochs.append(name)
+    eligible_records, ages = filter_fresh_tle_records(records, start, args.max_tle_age_hours)
+    future_epochs = [
+        item["object"] for item in ages if item["status"] == "future_epoch"
+    ]
+    stale_epochs = [
+        item["object"] for item in ages if item["status"] == "stale"
+    ]
+    invalid_epochs = [
+        item["object"] for item in ages if item["status"] == "invalid_epoch"
+    ]
+    if len(eligible_records) < 2:
+        raise RuntimeError(
+            "Screening stopped: fewer than two TLE records are fresh "
+            f"within the {args.max_tle_age_hours:g}-hour limit ({len(eligible_records)} eligible)."
+        )
 
     payload = {
         "schema_version": "1.0",
@@ -131,18 +156,21 @@ def run_json_screening(args):
             "step_seconds": args.step_seconds if args.hours > 0 else None,
             "top": args.top,
             "input_objects": len(records),
+            "eligible_objects": len(eligible_records),
+            "excluded_objects": len(records) - len(eligible_records),
         },
         "tle_freshness": {
             "records": ages,
             "youngest_age_hours": min((x["age_hours"] for x in ages), default=None),
             "oldest_age_hours": max((x["age_hours"] for x in ages), default=None),
-            "max_age_hours": 6,
+            "max_age_hours": args.max_tle_age_hours,
             "fresh_records": sum(x["status"] == "fresh" for x in ages),
             "stale_records": sum(x["status"] == "stale" for x in ages),
+            "invalid_epoch_records": sum(x["status"] == "invalid_epoch" for x in ages),
+            "excluded_records": len(records) - len(eligible_records),
             "future_epoch_objects": future_epochs,
-            "stale_epoch_objects": [
-                x["object"] for x in ages if x["status"] == "stale"
-            ],
+            "stale_epoch_objects": stale_epochs,
+            "invalid_epoch_objects": invalid_epochs,
             "uncertainty_note": "TLE age alone does not quantify orbital uncertainty.",
         },
         "units": {
@@ -164,7 +192,7 @@ def run_json_screening(args):
     }
 
     if args.hours == 0:
-        states = propagate_records(records, start)
+        states = propagate_records(eligible_records, start)
         if len(states) < 2:
             raise RuntimeError("Need at least two successfully propagated objects.")
 
@@ -225,7 +253,7 @@ def run_json_screening(args):
         payload["screening"]["end_utc"] = end.isoformat()
 
         duplicates = find_duplicate_pairs_over_window(
-            records, start, end, args.step_seconds
+            eligible_records, start, end, args.step_seconds
         )
         payload["data_quality_flags"] = [
             {
@@ -251,8 +279,8 @@ def run_json_screening(args):
         }
         results = []
         failures = []
-        for i, first in enumerate(records):
-            for second in records[i + 1:]:
+        for i, first in enumerate(eligible_records):
+            for second in eligible_records[i + 1:]:
                 if frozenset((
                     first[1][2:7].strip(), second[1][2:7].strip()
                 )) in duplicate_keys:
@@ -296,6 +324,12 @@ def main():
     parser.add_argument("--step-seconds", type=float, default=60.0)
     parser.add_argument("--start", type=parse_utc, default=None)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument(
+        "--max-tle-age-hours",
+        type=float,
+        default=os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "6"),
+        help="Maximum permitted TLE epoch age in hours (default: 6; env: SKYTRACE_MAX_TLE_AGE_HOURS).",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args()
 
@@ -305,6 +339,8 @@ def main():
         parser.error("--step-seconds must be finite and positive.")
     if args.top < 1:
         parser.error("--top must be at least 1.")
+    if not math.isfinite(args.max_tle_age_hours) or not 0.1 <= args.max_tle_age_hours <= 72:
+        parser.error("--max-tle-age-hours must be between 0.1 and 72 hours.")
 
     if args.format == "json":
         run_json_screening(args)
@@ -317,38 +353,33 @@ def main():
     print(f"Input objects: {len(records)}")
     print(f"Start time (UTC): {start.isoformat()}")
 
-    # Calculate each TLE epoch from its orbital elements, not file timestamps.
-    ages = []
-    future_epochs = []
-    for name, line1, line2 in records:
-        satellite = Satrec.twoline2rv(line1, line2)
-        epoch_jd = satellite.jdsatepoch + satellite.jdsatepochF
-        epoch_datetime = datetime(2000, 1, 1, 12, tzinfo=timezone.utc) + timedelta(
-            days=epoch_jd - 2451545.0
-        )
-        age_hours = tle_age_hours(epoch_datetime, start)
-        ages.append((name, age_hours))
-        if age_hours < 0:
-            future_epochs.append((name, age_hours))
-
-    if ages:
-        age_values = [age for _, age in ages]
+    eligible_records, freshness_report = filter_fresh_tle_records(records, start, args.max_tle_age_hours)
+    fresh_ages = [
+        item["age_hours"] for item in freshness_report
+        if item["status"] == "fresh"
+    ]
+    print(f"Maximum TLE epoch age: {args.max_tle_age_hours:g} hours")
+    print(f"Eligible fresh objects: {len(eligible_records)} / {len(records)}")
+    print(
+        "Excluded TLE records: "
+        f"{len(records) - len(eligible_records)} "
+        "(stale, future-epoch, or invalid epoch)"
+    )
+    if fresh_ages:
         print(
-            "TLE age at screening start: "
-            f"youngest={min(age_values):.2f} h, "
-            f"oldest={max(age_values):.2f} h"
+            "Fresh TLE age range: "
+            f"youngest={min(fresh_ages):.2f} h, "
+            f"oldest={max(fresh_ages):.2f} h"
         )
-        if future_epochs:
-            print(
-                "WARNING: TLE epoch is later than screening start for: "
-                + ", ".join(name for name, _ in future_epochs)
-            )
-        else:
-            print("TLE epoch check: all epochs are at or before screening start.")
     print("Freshness note: age alone does not quantify orbital uncertainty.")
+    if len(eligible_records) < 2:
+        raise RuntimeError(
+            "Screening stopped: fewer than two TLE records are fresh "
+            f"within the {args.max_tle_age_hours:g}-hour limit ({len(eligible_records)} eligible)."
+        )
 
     if args.hours == 0:
-        states = propagate_records(records, start)
+        states = propagate_records(eligible_records, start)
         if len(states) < 2:
             raise RuntimeError("Need at least two successfully propagated objects.")
 
@@ -403,7 +434,7 @@ def main():
         # every sampled timestamp. This is a data-quality filter, not a
         # collision-risk classification.
         duplicates = find_duplicate_pairs_over_window(
-            records, start, end, args.step_seconds
+            eligible_records, start, end, args.step_seconds
         )
         duplicate_keys = {
             frozenset((
@@ -425,8 +456,8 @@ def main():
 
         results = []
         failures = 0
-        for i, first in enumerate(records):
-            for second in records[i + 1:]:
+        for i, first in enumerate(eligible_records):
+            for second in eligible_records[i + 1:]:
                 if frozenset((
                     first[1][2:7].strip(), second[1][2:7].strip()
                 )) in duplicate_keys:

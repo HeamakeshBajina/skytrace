@@ -31,6 +31,74 @@ function formatVector(values: number[], digits = 2) {
   })).join(", ");
 }
 
+const EARTH_MU_KM3_S2 = 398600.4418;
+
+function calculateOrbitalElements(position: number[], velocity: number[]) {
+  const dot = (a: number[], b: number[]) =>
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  const cross = (a: number[], b: number[]) => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+
+  const magnitude = (v: number[]) => Math.sqrt(dot(v, v));
+
+  const r = magnitude(position);
+  const speed = magnitude(velocity);
+
+  if (!Number.isFinite(r) || r <= 0 || !Number.isFinite(speed)) {
+    return null;
+  }
+
+  const hVector = cross(position, velocity);
+  const h = magnitude(hVector);
+
+  if (!Number.isFinite(h) || h <= 0) return null;
+
+  const eccentricityVector = cross(velocity, hVector).map(
+    (value, index) => value / EARTH_MU_KM3_S2 - position[index] / r,
+  );
+  const eccentricity = magnitude(eccentricityVector);
+
+  const specificEnergy = (speed * speed) / 2 - EARTH_MU_KM3_S2 / r;
+  const semiMajorAxis =
+    Math.abs(specificEnergy) > 1e-12
+      ? -EARTH_MU_KM3_S2 / (2 * specificEnergy)
+      : null;
+
+  const inclination = Math.acos(
+    Math.max(-1, Math.min(1, hVector[2] / h)),
+  ) * (180 / Math.PI);
+
+  const periodMinutes =
+    semiMajorAxis !== null && semiMajorAxis > 0 && eccentricity < 1
+      ? (2 * Math.PI * Math.sqrt(
+          Math.pow(semiMajorAxis, 3) / EARTH_MU_KM3_S2,
+        )) / 60
+      : null;
+
+  return {
+    altitudeKm: r - EARTH_RADIUS_KM,
+    speedKmS: speed,
+    semiMajorAxisKm: semiMajorAxis,
+    eccentricity,
+    inclinationDeg: inclination,
+    periodMinutes,
+  };
+}
+
+function formatMetric(value: number | null, digits = 2) {
+  return value !== null && Number.isFinite(value)
+    ? value.toLocaleString(undefined, {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      })
+    : "Unavailable";
+}
+
+
 export default function OrbitViewer() {
   const hostRef = useRef<HTMLDivElement>(null);
   const markerObjectsRef = useRef<{ mesh: THREE.Mesh; item: OrbitalObject }[]>([]);
@@ -54,10 +122,38 @@ export default function OrbitViewer() {
           cache: "no-store",
           signal: controller.signal,
         });
-        if (!response.ok) {
-          throw new Error(`Orbital API returned HTTP ${response.status}`);
+        const responseBody = await response.text();
+        let parsedBody: unknown = null;
+        try {
+          parsedBody = responseBody ? JSON.parse(responseBody) : null;
+        } catch {
+          parsedBody = null;
         }
-        const result = (await response.json()) as OrbitPayload;
+
+        if (!response.ok) {
+          const detail =
+            typeof parsedBody === "object" &&
+            parsedBody !== null &&
+            "detail" in parsedBody &&
+            typeof parsedBody.detail === "string"
+              ? parsedBody.detail
+              : "";
+
+          if (response.status === 503 && detail) {
+            throw new Error(
+              `Fresh orbital data is currently unavailable. ${detail}`,
+            );
+          }
+
+          throw new Error(
+            detail || `Orbital API returned HTTP ${response.status}`,
+          );
+        }
+
+        if (!parsedBody || typeof parsedBody !== "object") {
+          throw new Error("Orbital API returned an invalid response.");
+        }
+        const result = parsedBody as OrbitPayload;
 
         if (
           !Array.isArray(result.objects) ||
@@ -390,7 +486,8 @@ export default function OrbitViewer() {
           <span className="orbit-object-id">{selected?.catalog_id ?? "—"}</span>
         </div>
         {selected ? (
-          <div className="orbit-vector-grid">
+          <>
+            <div className="orbit-vector-grid">
             <div>
               <span>Position · km (TEME)</span>
               <code>{formatVector(selected.position_km)}</code>
@@ -400,6 +497,47 @@ export default function OrbitViewer() {
               <code>{formatVector(selected.velocity_km_s, 4)}</code>
             </div>
           </div>
+          {(() => {
+            const elements = calculateOrbitalElements(
+              selected.position_km,
+              selected.velocity_km_s,
+            );
+
+            if (!elements) return null;
+
+            return (
+              <>
+                <p className="muted-note">Derived two-body orbital estimates</p>
+                <div className="orbit-vector-grid">
+                  <div>
+                    <span>Altitude ? km</span>
+                    <code>{formatMetric(elements.altitudeKm)}</code>
+                  </div>
+                  <div>
+                    <span>Speed ? km/s</span>
+                    <code>{formatMetric(elements.speedKmS, 4)}</code>
+                  </div>
+                  <div>
+                    <span>Semi-major axis ? km</span>
+                    <code>{formatMetric(elements.semiMajorAxisKm)}</code>
+                  </div>
+                  <div>
+                    <span>Eccentricity</span>
+                    <code>{formatMetric(elements.eccentricity, 5)}</code>
+                  </div>
+                  <div>
+                    <span>Inclination ? degrees</span>
+                    <code>{formatMetric(elements.inclinationDeg)}</code>
+                  </div>
+                  <div>
+                    <span>Period ? minutes</span>
+                    <code>{formatMetric(elements.periodMinutes)}</code>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+          </>
         ) : (
           <p className="muted-note">{loadError || "Select an object below to inspect its state vector."}</p>
         )}
