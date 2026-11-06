@@ -1,4 +1,4 @@
-
+﻿
 import argparse
 import http.cookiejar
 import json
@@ -91,6 +91,24 @@ def fetch_spacetrack():
             "Space-Track returned no usable station-related TLE records."
         )
 
+    provider_records = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("OBJECT_NAME") or "").strip()
+        if not name or not any(
+            keyword in name.upper() for keyword in station_keywords
+        ):
+            continue
+        provider_records.append({
+            "object_name": name,
+            "norad_cat_id": str(item.get("NORAD_CAT_ID") or ""),
+            "epoch": item.get("EPOCH"),
+            "creation_date": item.get("CREATION_DATE"),
+            "element_set_no": item.get("ELEMENT_SET_NO"),
+        })
+
+    LAST_SPACETRACK_PROVIDER_RECORDS = provider_records
     return "\n".join(lines) + "\n", query_url
 
 
@@ -282,10 +300,12 @@ def main():
 
     raw_data = None
     source_url = None
+    provider_record_timestamps = []
 
     if os.getenv("SPACETRACK_USER") and os.getenv("SPACETRACK_PASS"):
         try:
             raw_data, source_url = fetch_spacetrack()
+            provider_record_timestamps = LAST_SPACETRACK_PROVIDER_RECORDS
             print("Data source: Space-Track")
         except Exception as exc:
             print(
@@ -364,6 +384,7 @@ def main():
             "source": source_url,
             "retrieved_at_utc": retrieved_at,
             "record_count": len(records),
+            "provider_record_timestamps": provider_record_timestamps,
             "format": "TLE",
             "validation": (
                 "Structure, catalog IDs, and TLE checksums passed; "
