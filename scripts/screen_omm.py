@@ -45,6 +45,23 @@ def persistent_duplicate_state_pairs(samples):
     return {key: details[key] for key in (persistent or set())}
 
 
+def sample_window_times(start, end, step_seconds):
+    """Return timestamps including the exact requested end."""
+    if step_seconds <= 0:
+        raise ValueError("step_seconds must be positive")
+    if end < start:
+        raise ValueError("end must not precede start")
+    times = []
+    current = start
+    step = timedelta(seconds=step_seconds)
+    while current <= end:
+        times.append(current)
+        current += step
+    if not times or times[-1] != end:
+        times.append(end)
+    return times
+
+
 def main():
     parser = argparse.ArgumentParser(description="SKYTRACE OMM close-approach screening")
     parser.add_argument("--data-file", required=True)
@@ -128,13 +145,13 @@ def main():
         }
     else:
         end = start + timedelta(hours=args.hours)
+        sample_times = sample_window_times(start, end, args.step_seconds)
         sample_count = 0
-        current = start
         pair_minima = {}
         evaluated_pair_keys = set()
         duplicate_samples = []
 
-        while current <= end:
+        for current in sample_times:
             states = propagate_at(eligible, current)
             sample_count += 1
             duplicate_samples.append(states)
@@ -155,8 +172,6 @@ def main():
                             "separation_km": distance,
                             "time_utc": current.isoformat(),
                         }
-
-            current += timedelta(seconds=args.step_seconds)
 
         persistent_duplicates = persistent_duplicate_state_pairs(duplicate_samples)
         for item in persistent_duplicates.values():
