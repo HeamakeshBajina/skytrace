@@ -15,7 +15,7 @@ SCRIPT = ROOT / "scripts" / "screen_approaches.py"
 FETCH_SCRIPT = ROOT / "scripts" / "fetch_satellites.py"
 OMM_SCRIPT = ROOT / "scripts" / "screen_omm.py"
 def configured_max_tle_age_hours():
-    raw_value = os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "6")
+    raw_value = os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "72")
     try:
         value = float(raw_value)
     except (TypeError, ValueError) as exc:
@@ -41,19 +41,38 @@ app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
 
 
 
+def snapshot_retrieval_time(snapshot_path):
+    # Read provider retrieval time from the paired metadata file.
+    metadata_path = snapshot_path.with_suffix(".json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        value = metadata.get("retrieved_at_utc")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        retrieved = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if retrieved.tzinfo is None or retrieved.utcoffset() is None:
+            return None
+        return retrieved.astimezone(timezone.utc)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def snapshot_candidates():
+    # Order OMM and TLE together by provider retrieval time. Do not prioritize
+    # OMM merely because it has a different file extension.
     raw = ROOT / "data" / "raw"
-    omm = sorted(
-        raw.glob("stations_*.omm.xml"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    tle = sorted(
-        raw.glob("stations_*.tle"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return omm + tle
+    candidates = list(raw.glob("stations_*.omm.xml"))
+    candidates.extend(raw.glob("stations_*.tle"))
+
+    def sort_key(path):
+        retrieved = snapshot_retrieval_time(path)
+        return (
+            retrieved is not None,
+            retrieved or datetime.min.replace(tzinfo=timezone.utc),
+            path.stat().st_mtime,
+        )
+
+    return sorted(candidates, key=sort_key, reverse=True)
 
 
 def latest_snapshot():
@@ -412,6 +431,7 @@ def screening(
             "--hours", str(hours),
             "--step-seconds", str(step_seconds),
             "--top", str(top),
+            "--max-tle-age-hours", str(MAX_TLE_AGE_HOURS),
             "--format", "json",
         ])
 

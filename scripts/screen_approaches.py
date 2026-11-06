@@ -327,8 +327,8 @@ def main():
     parser.add_argument(
         "--max-tle-age-hours",
         type=float,
-        default=os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "6"),
-        help="Maximum permitted TLE epoch age in hours (default: 6; env: SKYTRACE_MAX_TLE_AGE_HOURS).",
+        default=os.environ.get("SKYTRACE_MAX_TLE_AGE_HOURS", "72"),
+        help="Maximum permitted TLE epoch age in hours (default: 72; env: SKYTRACE_MAX_TLE_AGE_HOURS).",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args()
