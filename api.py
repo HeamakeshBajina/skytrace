@@ -37,23 +37,6 @@ _last_refresh_failure_detail = None
 app = FastAPI(title="SKYTRACE Screening API", version="1.1.0")
 
 
-    records = freshness.get("records")
-    ages = []
-    if isinstance(records, list):
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            age = record.get("age_hours")
-            if (
-                isinstance(age, (int, float))
-                and not isinstance(age, bool)
-                and math.isfinite(age)
-            ):
-                ages.append(float(age))
-
-    freshness["youngest_age_hours"] = min(ages) if ages else None
-    freshness["oldest_age_hours"] = max(ages) if ages else None
-    return payload
 
 
 
