@@ -341,7 +341,7 @@ export default function OrbitViewer() {
         );
         if (!Number.isFinite(position.length()) || position.length() < 1) continue;
 
-        const material = new THREE.MeshBasicMaterial({ color: 0x48d8f5 });
+        const material = new THREE.MeshBasicMaterial({ color: 0x48d8f5, depthTest: false, depthWrite: false });
         const mesh = new THREE.Mesh(markerGeometry, material);
         mesh.position.copy(position);
         mesh.userData.catalogId = item.catalog_id;
@@ -353,12 +353,29 @@ export default function OrbitViewer() {
             color: 0x2cc8f1,
             transparent: true,
             opacity: 0.18,
+            depthTest: false,
+            depthWrite: false,
           }),
         );
         halo.position.copy(position);
         markerGroup.add(halo);
         markerEntries.push({ mesh, item });
       }
+            // Automatically fit the camera to all orbital objects.
+      const maxRadius = markerEntries.reduce(
+        (maximum, entry) =>
+          Math.max(maximum, entry.mesh.position.length()),
+        1,
+      );
+
+      const fitDistance = Math.max(4.5, maxRadius * 1.8);
+
+      camera.position.normalize().multiplyScalar(fitDistance);
+      camera.far = Math.max(1000, fitDistance * 10);
+      camera.updateProjectionMatrix();
+
+      controls.maxDistance = Math.max(12, fitDistance * 4);
+      controls.update();
       markerObjectsRef.current = markerEntries;
     }
 
@@ -473,7 +490,7 @@ export default function OrbitViewer() {
   return (
     <div className="orbit-viewer">
       <div className="orbit-viewer-stage" ref={hostRef}>
-        {loading && <div className="orbit-overlay">Loading propagated orbital states…</div>}
+        {loading && <div className="orbit-overlay">Loading propagated orbital states...</div>}
         {!loading && loadError && (
           <div className="orbit-overlay orbit-overlay-error" role="alert">
             <strong>Orbital data unavailable</strong>
@@ -488,7 +505,7 @@ export default function OrbitViewer() {
           <span className="status-dot" />
           {payload ? `${payload.object_count} API objects` : "Awaiting data"}
         </div>
-        <div className="orbit-viewer-help">Drag to rotate · Select a satellite to focus it · Scroll to zoom</div>
+        <div className="orbit-viewer-help">Drag to rotate | Select a satellite to focus it | Scroll to zoom</div>
       </div>
 
       <div className="orbit-object-detail">
@@ -497,17 +514,17 @@ export default function OrbitViewer() {
             <span className="eyebrow">SELECTED OBJECT</span>
             <strong>{selected?.name ?? "No object selected"}</strong>
           </div>
-          <span className="orbit-object-id">{selected?.catalog_id ?? "—"}</span>
+          <span className="orbit-object-id">{selected?.catalog_id ?? "N/A"}</span>
         </div>
         {selected ? (
           <>
             <div className="orbit-vector-grid">
             <div>
-              <span>Position · km (TEME)</span>
+              <span>Position (km, TEME)</span>
               <code>{formatVector(selected.position_km)}</code>
             </div>
             <div>
-              <span>Velocity · km/s (TEME)</span>
+              <span>Velocity (km/s, TEME)</span>
               <code>{formatVector(selected.velocity_km_s, 4)}</code>
             </div>
           </div>
@@ -575,8 +592,8 @@ export default function OrbitViewer() {
 
       <div className="orbit-data-foot">
         <span>Frame: {payload?.coordinate_frame ?? "TEME"}</span>
-        <span>Propagated: {payload?.propagated_at_utc ? new Date(payload.propagated_at_utc).toISOString().replace("T", " ").replace(".000Z", " UTC") : "—"}</span>
-        <span>Snapshot age: {payload?.snapshot_age_hours != null ? `${payload.snapshot_age_hours.toFixed(1)} h` : "—"}</span>
+        <span>Propagated: {payload?.propagated_at_utc ? new Date(payload.propagated_at_utc).toISOString().replace("T", " ").replace(".000Z", " UTC") : "N/A"}</span>
+        <span>Snapshot age: {payload?.snapshot_age_hours != null ? `${payload.snapshot_age_hours.toFixed(1)} h` : "N/A"}</span>
       </div>
     </div>
   );
