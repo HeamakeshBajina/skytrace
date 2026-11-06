@@ -207,6 +207,27 @@ def ensure_fresh_snapshot():
             detail=_last_refresh_failure_detail,
         ) from exc
 
+    # Forward bounded fetcher output to Render logs for provider diagnosis.
+    # The fetcher does not print credentials; this patch does not read or log env vars.
+    refresh_stdout = (refresh.stdout or "").strip()
+    refresh_stderr = (refresh.stderr or "").strip()
+
+    if refresh_stdout:
+        print(
+            "[SKYTRACE DATA REFRESH] stdout:\n" + refresh_stdout[-4000:],
+            flush=True,
+        )
+    if refresh_stderr:
+        print(
+            "[SKYTRACE DATA REFRESH] stderr:\n" + refresh_stderr[-4000:],
+            flush=True,
+        )
+    if not refresh_stdout and not refresh_stderr:
+        print(
+            "[SKYTRACE DATA REFRESH] Fetcher completed without console output.",
+            flush=True,
+        )
+
     if refresh.returncode != 0:
         _last_refresh_failure_at = time.monotonic()
         _last_refresh_failure_detail = (
